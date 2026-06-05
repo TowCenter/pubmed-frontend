@@ -309,11 +309,15 @@
   }
   .author-name {
     font-weight: 500;
+    color: var(--cjr-text);
+    padding: 0;
   }
   .author-coi-tags {
     display: inline-flex;
     flex-wrap: wrap;
     gap: 0.3rem;
+    padding: 0;
+    color: var(--cjr-text);
   }
 
   .mesh-terms-block {
