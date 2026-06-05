@@ -18,7 +18,7 @@ export default defineConfig(({ mode }) => {
         "$routes": path.resolve("./src/routes"),
       }
     },
-    base: '/pubmed-semantic-interactive/', // Must match GitHub repo name for Pages
+    base: '/pubmed-frontend/', // Must match GitHub repo name for Pages
     build: {
       outDir: 'dist' // Use 'dist' since you're using the `gh-pages` branch
     }
