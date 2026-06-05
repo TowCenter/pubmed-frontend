@@ -1,0 +1,47 @@
+/* P+P / CJR design-template style tokens */
+:root {
+  --cjr-blue: #254c6f;
+  --cjr-blue-dark: #1a3454;
+  --cjr-blue-focus: rgba(37, 76, 111, 0.2);
+  --cjr-accent: #DE5A35;
+  --cjr-accent-hover: #c94a26;
+  --cjr-text: #222222;
+  --cjr-text-muted: #999999;
+  --cjr-bg: #FAFAFA;
+  --cjr-white: #fff;
+  --cjr-border: #ccc;
+  --font-heading: Georgia, 'Lyon Display Web', serif;
+  --font-body: system-ui, 'Graphik Web', Helvetica, Arial, sans-serif;
+}
+
+/* Minified CSS reset */
+a,abbr,acronym,address,applet,article,aside,audio,b,big,blockquote,body,canvas,caption,center,cite,code,dd,del,details,dfn,div,dl,dt,em,embed,fieldset,figcaption,figure,footer,form,h1,h2,h3,h4,h5,h6,header,hgroup,html,i,iframe,img,ins,kbd,label,legend,li,mark,menu,nav,object,ol,output,p,pre,q,ruby,s,samp,section,small,span,strike,strong,sub,summary,sup,table,tbody,td,tfoot,th,thead,time,tr,tt,u,ul,var,video{margin:0;padding:0;border:0;font-size:100%;font:inherit;vertical-align:baseline}article,aside,details,figcaption,figure,footer,header,hgroup,menu,nav,section{display:block}body{line-height:1}ol,ul{list-style:none}blockquote,q{quotes:none}blockquote:after,blockquote:before,q:after,q:before{content:'';content:none}table{border-collapse:collapse;border-spacing:0}
+
+html {
+  scrollbar-gutter: stable;
+}
+
+body {
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--cjr-text);
+  background: var(--cjr-bg);
+  padding: 6px;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  text-decoration: none;
+  color: var(--cjr-accent);
+}
+a:hover {
+  color: var(--cjr-accent-hover);
+}
+
+.github-fork-ribbon:before {
+  background-color: var(--cjr-blue);
+}
