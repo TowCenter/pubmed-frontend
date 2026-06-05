@@ -515,7 +515,7 @@
       highlightedData = [];
     } else {
       selectedValues = newSelected;
-      if (newSelected.size > 0) opacity = 0.25;
+      if (newSelected.size > 0) opacity = 0.05;
       highlightedData = data.filter((d) => {
         const rowValues = parseColumnValueToItems(d[domainColumn]);
         const match =
