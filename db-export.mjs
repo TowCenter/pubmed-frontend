@@ -31,6 +31,19 @@ const SQL = `
     (SELECT string_agg(au.full_name, '; ' ORDER BY aa.author_order)
        FROM article_author aa JOIN author au ON au.author_id = aa.author_id
        WHERE aa.article_id = a.article_id) AS authors,
+    -- Per-author breakdown: every author in order, each with their own disclosed
+    -- COI organizations (null when they declared none). Lets the detail card show
+    -- COIs against the specific authors that have them.
+    (SELECT json_agg(json_build_object(
+        'name', au.full_name,
+        'coi', (SELECT array_agg(DISTINCT btrim(co.coi_institution))
+                  FROM author_coi co
+                  WHERE co.article_id = a.article_id
+                    AND co.author_id = au.author_id
+                    AND NULLIF(btrim(co.coi_institution), '') IS NOT NULL)
+      ) ORDER BY aa.author_order)
+       FROM article_author aa JOIN author au ON au.author_id = aa.author_id
+       WHERE aa.article_id = a.article_id) AS authors_detail,
     (SELECT string_agg(k.keyword_text, '; ')
        FROM article_keyword ak JOIN keyword k ON k.keyword_id = ak.keyword_id
        WHERE ak.article_id = a.article_id) AS keywords,
@@ -100,6 +113,7 @@ export async function buildCsv() {
       abstract: r.abstract,
       journal: r.journal,
       authors: r.authors,
+      authors_detail: r.authors_detail ? JSON.stringify(r.authors_detail) : '',
       keywords: r.keywords,
       coi: r.coi,
       coi_org: r.coi_org,

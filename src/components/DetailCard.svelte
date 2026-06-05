@@ -61,6 +61,44 @@
     return s.split(/[;,]/).map((x) => x.trim()).filter(Boolean);
   }
 
+  /**
+   * Build a per-author list with each author's disclosed COI organizations.
+   * Prefers the structured `authors_detail` JSON; falls back to splitting the
+   * flat `authors` string (no COI info) for older data.
+   */
+  function parseAuthorsDetail(raw, authorsFallback) {
+    if (raw != null && String(raw).trim() !== '') {
+      try {
+        const arr = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (Array.isArray(arr)) {
+          return arr
+            .filter((a) => a && a.name)
+            .map((a) => ({
+              name: String(a.name).trim(),
+              coi: Array.isArray(a.coi)
+                ? [...new Set(
+                    a.coi
+                      .flatMap((c) => String(c).split(';'))
+                      .map((c) => c.trim())
+                      .filter(Boolean),
+                  )]
+                : [],
+            }));
+        }
+      } catch { /* fall through to flat list */ }
+    }
+    if (authorsFallback == null || String(authorsFallback).trim() === '') return [];
+    return String(authorsFallback)
+      .split(/[;]/)
+      .map((n) => n.trim())
+      .filter(Boolean)
+      .map((name) => ({ name, coi: [] }));
+  }
+
+  $: authorsDetail = parseAuthorsDetail(
+    hoveredData && hoveredData.authors_detail,
+    hoveredData && hoveredData.authors,
+  );
 </script>
 
 <div class="detail-card">
@@ -96,10 +134,23 @@
     {:else}
       <h1>{@html highlightText(hoveredData.title, searchQuery)}</h1>
     {/if}
-    {#if hoveredData.authors != null && hoveredData.authors !== ''}
+    {#if authorsDetail.length}
       <div class="authors-block">
         <p class="authors-label">Authors</p>
-        <p class="authors-list">{hoveredData.authors}</p>
+        <ul class="authors-list">
+          {#each authorsDetail as author}
+            <li class="author-item" class:has-coi={author.coi.length}>
+              <span class="author-name">{author.name}</span>
+              {#if author.coi.length}
+                <span class="author-coi-tags">
+                  {#each author.coi as org}
+                    <span class="coi-tag" title="Disclosed conflict of interest">{org}</span>
+                  {/each}
+                </span>
+              {/if}
+            </li>
+          {/each}
+        </ul>
       </div>
     {/if}
     {#if (hoveredData.keywords ?? hoveredData['mesh terms']) != null && (hoveredData.keywords ?? hoveredData['mesh terms']) !== ''}
@@ -110,19 +161,6 @@
           <div class="mesh-terms-tags">
             {#each terms as term}
               <span class="mesh-tag">{term}</span>
-            {/each}
-          </div>
-        </div>
-      {/if}
-    {/if}
-    {#if hoveredData.coi_org != null && String(hoveredData.coi_org).trim() !== ''}
-      {@const orgs = String(hoveredData.coi_org).split(';').map((s) => s.trim()).filter(Boolean)}
-      {#if orgs.length > 0}
-        <div class="coi-block">
-          <p class="coi-label">Conflict of Interest — Organizations</p>
-          <div class="coi-tags">
-            {#each orgs as org}
-              <span class="coi-tag">{org}</span>
             {/each}
           </div>
         </div>
@@ -253,7 +291,29 @@
     line-height: 1.45;
     color: var(--cjr-text);
     margin: 0;
+    padding: 0;
+    list-style: none;
     word-wrap: break-word;
+  }
+  .author-item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.35rem 0.5rem;
+    padding: 0.15rem 0;
+  }
+  .author-item.has-coi {
+    border-left: 2px solid #a3361f;
+    padding-left: 0.5rem;
+    margin-left: -0.5rem;
+  }
+  .author-name {
+    font-weight: 500;
+  }
+  .author-coi-tags {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
   }
 
   .mesh-terms-block {
@@ -328,28 +388,10 @@
     border-radius: 999px;
   }
 
-  .coi-block {
-    padding: 0.75rem 0;
-    margin: 0.25rem 0;
-  }
-  .coi-label {
-    font-size: 0.7rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: #a3361f;
-    margin: 0 0 0.5rem 0;
-  }
-  .coi-tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-    margin: 0;
-  }
   .coi-tag {
     display: inline-block;
-    padding: 0.2rem 0.5rem;
-    font-size: 0.75rem;
+    padding: 0.1rem 0.45rem;
+    font-size: 0.72rem;
     font-weight: 500;
     color: #a3361f;
     background: rgba(163, 54, 31, 0.08);
