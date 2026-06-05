@@ -115,6 +115,19 @@
         </div>
       {/if}
     {/if}
+    {#if hoveredData.coi_org != null && String(hoveredData.coi_org).trim() !== ''}
+      {@const orgs = String(hoveredData.coi_org).split(';').map((s) => s.trim()).filter(Boolean)}
+      {#if orgs.length > 0}
+        <div class="coi-block">
+          <p class="coi-label">Conflict of Interest — Organizations</p>
+          <div class="coi-tags">
+            {#each orgs as org}
+              <span class="coi-tag">{org}</span>
+            {/each}
+          </div>
+        </div>
+      {/if}
+    {/if}
     {#if hoveredData.citationCount != null && hoveredData.citationCount > 0}
       {@const inDataset = pmidsInDataset()}
       {@const selfPmid = String(hoveredData.pmid ?? hoveredData.PMID ?? '').trim()}
@@ -312,6 +325,35 @@
     color: var(--cjr-blue);
     background: rgba(37, 76, 111, 0.1);
     border: 1px solid rgba(37, 76, 111, 0.22);
+    border-radius: 999px;
+  }
+
+  .coi-block {
+    padding: 0.75rem 0;
+    margin: 0.25rem 0;
+  }
+  .coi-label {
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #a3361f;
+    margin: 0 0 0.5rem 0;
+  }
+  .coi-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin: 0;
+  }
+  .coi-tag {
+    display: inline-block;
+    padding: 0.2rem 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: #a3361f;
+    background: rgba(163, 54, 31, 0.08);
+    border: 1px solid rgba(163, 54, 31, 0.25);
     border-radius: 999px;
   }
 

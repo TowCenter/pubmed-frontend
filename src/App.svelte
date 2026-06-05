@@ -141,8 +141,23 @@
   $: maxDateFromData = allDates.length > 0 ? allDates[allDates.length - 1] : null;
 
   const NON_CATEGORICAL_COLUMNS = new Set([
-    "x", "y", "date", "id", "embedding", "n_tokens", "abstract", "text",
+    // Free-text / per-row-unique fields that make no sense as highlight categories.
+    // "coi" is the raw disclosure text (kept for search/detail); "coi_org" holds
+    // the clean, selectable organizations instead.
+    "x", "y", "date", "id", "embedding", "n_tokens", "abstract", "text", "coi",
   ]);
+
+  // Friendlier labels for the "Highlight by column" dropdown (falls back to the
+  // raw column name for anything not listed).
+  const COLUMN_LABELS = {
+    coi_org: "COI organization",
+    affiliations: "Affiliation",
+    funding: "Funding",
+    authors: "Author",
+    keywords: "Keyword",
+    journal: "Journal",
+  };
+  const columnLabel = (c) => COLUMN_LABELS[c] || c;
   const IMPACT_HIGH = "High (10+)";
   const IMPACT_MEDIUM = "Medium (1–9)";
   const IMPACT_NONE = "None (0)";
@@ -320,7 +335,7 @@
         // Fields the keyword search looks through.
         const haystack = [
           d.title, d.abstract ?? d.text, d.authors,
-          d.coi, d.affiliations, d.funding,
+          d.coi, d.coi_org, d.affiliations, d.funding,
         ].filter((v) => v != null).join("\n");
         try {
           const regex = new RegExp(searchQuery, "i");
@@ -810,7 +825,7 @@
           >
             <option value="">Choose column</option>
             {#each allowedDomainColumns as column}
-              <option value={column}>{column}</option>
+              <option value={column}>{columnLabel(column)}</option>
             {/each}
           </select>
         </section>
@@ -1426,8 +1441,9 @@
     text-align: left;
   }
 
-  /* Responsive layout for smaller screens (13-inch laptops and smaller) */
-  @media (max-width: 1440px) {
+  /* Laptops / small desktops: tighten the 3-column dashboard but keep it
+     pinned to one screen. */
+  @media (min-width: 1025px) and (max-width: 1440px) {
     .content {
       display: grid;
       grid-template-columns: 230px 1fr 360px;
@@ -1457,21 +1473,63 @@
     }
   }
 
-  /* Fine-tune for very small screens */
-  @media (max-width: 768px) {
+  /* Tablets & phones: stop pinning to a single viewport. Let the page scroll
+     and stack the panels, with the plot taking a usable slice of the screen.
+     (The scatterplot uses a ResizeObserver, so it re-fits automatically.) */
+  @media (max-width: 1024px) {
+    :global(html, body, #app) {
+      height: auto;
+      overflow: auto;
+    }
+
+    .container {
+      height: auto;
+      min-height: 100%;
+      overflow: visible;
+    }
+
     .content {
       display: flex;
       flex-direction: column;
+      overflow: visible;
+      gap: 1rem;
     }
 
     .filter-panel {
       width: 100%;
-      max-height: 300px;
+      height: auto;
+      max-height: none;
+      overflow: visible;
+    }
+
+    .scatterplot-container {
+      width: 100%;
+      height: 65vh;
+      min-height: 360px;
     }
 
     .detail-panel {
       width: 100%;
-      max-height: 250px;
+      height: auto;
+      max-height: none;
+      overflow: visible;
+    }
+  }
+
+  /* Phones: smaller plot slice + tighter chrome. */
+  @media (max-width: 768px) {
+    .container {
+      padding: 0.75rem;
+    }
+
+    .scatterplot-container {
+      height: 58vh;
+      min-height: 300px;
+      padding: 0.5rem;
+    }
+
+    .title {
+      font-size: 1.4rem;
     }
   }
 

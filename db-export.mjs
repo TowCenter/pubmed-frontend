@@ -36,13 +36,13 @@ const SQL = `
        WHERE ak.article_id = a.article_id) AS keywords,
     (SELECT string_agg(c.citing_pmid, ';')
        FROM article_citation c WHERE c.article_id = a.article_id) AS cited_by_pmids,
-    -- Conflict-of-interest disclosure text + the institution behind the COI
-    concat_ws(' | ',
-      (SELECT string_agg(DISTINCT NULLIF(btrim(co."COI_raw_text"), ''), ' | ')
-         FROM author_coi co WHERE co.article_id = a.article_id),
-      (SELECT string_agg(DISTINCT NULLIF(btrim(co.coi_institution), ''), ' | ')
-         FROM author_coi co WHERE co.article_id = a.article_id)
-    ) AS coi,
+    -- Conflict-of-interest: raw disclosure text (for keyword search + detail card)
+    (SELECT string_agg(DISTINCT NULLIF(btrim(co."COI_raw_text"), ''), ' | ')
+       FROM author_coi co WHERE co.article_id = a.article_id) AS coi,
+    -- COI organizations, clean & de-duped (';'-separated so the app can offer
+    -- them as selectable categories for "highlight by COI organization")
+    (SELECT string_agg(DISTINCT NULLIF(btrim(co.coi_institution), ''), '; ')
+       FROM author_coi co WHERE co.article_id = a.article_id) AS coi_org,
     -- Author affiliations (institution names)
     (SELECT string_agg(DISTINCT i.name, '; ')
        FROM author_affiliation af JOIN institution i ON i.institution_id = af.institution_id
@@ -102,6 +102,7 @@ export async function buildCsv() {
       authors: r.authors,
       keywords: r.keywords,
       coi: r.coi,
+      coi_org: r.coi_org,
       affiliations: r.affiliations,
       funding: r.funding,
       cited_by_pmids: r.cited_by_pmids,
