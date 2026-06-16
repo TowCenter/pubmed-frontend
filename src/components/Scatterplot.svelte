@@ -81,7 +81,7 @@
       const hasSelection = selectedValues && selectedValues.size > 0 && selectedValues.size < uniqueDomainCount;
       const inSelection = hasSelection ? selectedValues.has(d[domainColumn]) : true;
       const inDateRange = (startDate && endDate)
-        ? (d.date >= startDate && d.date <= endDate)
+        ? (!!d.date && d.date >= startDate && d.date <= endDate)
         : true;
       return inSearch && inSelection && inDateRange;
     }
@@ -109,8 +109,9 @@
       .range([innerHeight, 0]);
     
   // Precompute date bounds (used for defaults when needed)
-  $: minDate = data.length ? new Date(Math.min(...data.map(d => d.date.getTime()))) : null;
-  $: maxDate = data.length ? new Date(Math.max(...data.map(d => d.date.getTime()))) : null;
+  $: datedTimes = data.filter(d => d.date).map(d => d.date.getTime());
+  $: minDate = datedTimes.length ? new Date(Math.min(...datedTimes)) : null;
+  $: maxDate = datedTimes.length ? new Date(Math.max(...datedTimes)) : null;
 
     // HiDPI setup and responsive sizing based on container element
     let dpr = 1;

@@ -304,22 +304,27 @@
     };
   });
 
+  // True when the date slider spans the entire range (no date narrowing).
+  $: fullDateRange =
+    allDates.length > 0 &&
+    startDateIndex === 0 &&
+    endDateIndex === allDates.length - 1;
+
   let anyFilterActive = false;
   $: {
     // Determine if any filter is active
-    const fullDateRange =
-      allDates.length &&
-      startDateIndex === 0 &&
-      endDateIndex === allDates.length - 1;
     const hasSelection =
       selectedValues.size > 0 && selectedValues.size < uniqueValues.length;
     const hasSearch = searchQuery && searchQuery.trim().length > 0;
     anyFilterActive = !fullDateRange || hasSelection || hasSearch;
 
     filteredData = data.map((d) => {
-      const inDateRange =
-        (!startDate || d.date >= startDate) &&
-        (!endDate || d.date <= endDate);
+      // Undated articles (date === null) can't be placed on the timeline, so
+      // they only pass while the slider spans the full range.
+      const inDateRange = !d.date
+        ? fullDateRange
+        : (!startDate || d.date >= startDate) &&
+          (!endDate || d.date <= endDate);
       let inSelection = true;
       if (hasSelection && selectedValues.size > 0) {
         const raw = d[domainColumn];
@@ -443,11 +448,17 @@
           const rows = results.data;
           for (let i = 0; i < rows.length; i++) {
             const d = rows[i];
-            if (!d.x || !d.y || !d.date) continue;
+            if (!d.x || !d.y) continue;
             const numX = +d.x;
             const numY = +d.y;
-            const date = d.date instanceof Date ? d.date : new Date(d.date);
-            if (Number.isNaN(numX) || Number.isNaN(numY) || Number.isNaN(date.getTime())) continue;
+            if (Number.isNaN(numX) || Number.isNaN(numY)) continue;
+            // date is optional: undated articles (no publication_year) are kept
+            // and plotted by x/y, but treated as undated for the timeline filter.
+            let date = null;
+            if (d.date) {
+              const parsed = d.date instanceof Date ? d.date : new Date(d.date);
+              if (!Number.isNaN(parsed.getTime())) date = parsed;
+            }
             const citedByPmids = parseCitedByPmids(d.cited_by_pmids);
             const citationCount = citedByPmids.length;
             const impactBucket =
@@ -472,7 +483,7 @@
           }
 
           const dateSet = new Set();
-          for (let i = 0; i < data.length; i++) dateSet.add(data[i].date.getTime());
+          for (let i = 0; i < data.length; i++) if (data[i].date) dateSet.add(data[i].date.getTime());
           allDates = [...dateSet].sort((a, b) => a - b).map((t) => new Date(t));
           startDate = allDates[0];
           endDate = allDates[allDates.length - 1];
@@ -522,11 +533,11 @@
           highlightMatchMode === "or"
             ? rowValues.some((v) => selectedValues.has(v))
             : [...selectedValues].every((v) => rowValues.includes(v));
-        return (
-          match &&
-          (!startDate || d.date >= startDate) &&
-          (!endDate || d.date <= endDate)
-        );
+        const inDateRange = !d.date
+          ? fullDateRange
+          : (!startDate || d.date >= startDate) &&
+            (!endDate || d.date <= endDate);
+        return match && inDateRange;
       });
     }
 
