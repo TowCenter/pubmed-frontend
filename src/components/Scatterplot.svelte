@@ -1,5 +1,5 @@
 <script>
-  import { onMount, createEventDispatcher } from "svelte";
+  import { onMount } from "svelte";
   import { scaleLinear } from "d3-scale";
   import { max, min } from "d3-array";
   // Import from specific d3 packages, not the full "d3" meta-package, so the
@@ -12,8 +12,6 @@
   // not hue (no per-value coloring).
   const DOT_COLOR = "#1f77b4";
 
-  const dispatch = createEventDispatcher();
-
   export let data = [];
   export let domainColumn = "";
   export let opacity = 1;
@@ -21,7 +19,6 @@
   export let anyFilterActive = false;
   export let selectedValues = new Set();
   export let searchQuery = "";
-  export let showAnnotations = true;
   export let highlightedData = [];
   export let startDate = null;
   export let endDate = null;
@@ -30,7 +27,6 @@
   export let selectedPointIds = new Set();
   export let impactHighlightIds = new Set();
 
-  let annotations = [];
   let canvas;
   let containerEl;
   let ctx;
@@ -108,11 +104,6 @@
       .domain(yDomain)
       .range([innerHeight, 0]);
     
-  // Precompute date bounds (used for defaults when needed)
-  $: datedTimes = data.filter(d => d.date).map(d => d.date.getTime());
-  $: minDate = datedTimes.length ? new Date(Math.min(...datedTimes)) : null;
-  $: maxDate = datedTimes.length ? new Date(Math.max(...datedTimes)) : null;
-
     // HiDPI setup and responsive sizing based on container element
     let dpr = 1;
     function setupCanvasDPI() {
@@ -155,115 +146,6 @@
         ctx.fill();
         ctx.globalAlpha = .2; // reset for next operations
       });
-
-
-      // Draw annotations only if showAnnotations is true
-      if (showAnnotations) {
-        annotations.forEach(annotation => {
-          ctx.globalAlpha = 1;
-
-          // Draw annotation circle
-          ctx.beginPath();
-          ctx.arc(annotation.x, annotation.y, annotation.radius, 0, Math.PI * 2);
-          ctx.strokeStyle = "red";
-          ctx.lineWidth = 2;
-          ctx.setLineDash([5, 5]);
-          ctx.stroke();
-
-          // Set text properties for measuring
-          const maxWidth = 180; // Maximum width for the label
-          const lineHeight = 12; // Line height for wrapped text
-          ctx.font = "16px Arial";
-          
-          // Calculate label bounding box
-          const labelX = annotation.x + annotation.label_x;
-          const labelY = annotation.y + annotation.label_y;
-          
-          // Determine text bounds by measuring and wrapping text
-          let textWidth = 0;
-          let textHeight = 0;
-          let lines = [];
-          let currentLine = "";
-          
-          // Process text wrapping to calculate height and width
-          if (annotation.label) {
-            const words = annotation.label.split(" ");
-            let line = "";
-            
-            words.forEach((word, index) => {
-              const testLine = line + word + " ";
-              const testWidth = ctx.measureText(testLine).width;
-              
-              if (testWidth > maxWidth && index > 0) {
-                lines.push(line);
-                textWidth = Math.max(textWidth, ctx.measureText(line).width);
-                line = word + " ";
-              } else {
-                line = testLine;
-              }
-            });
-            
-            lines.push(line);
-            textWidth = Math.max(textWidth, ctx.measureText(line).width);
-            textHeight = lineHeight * lines.length;
-          }
-          
-          // Label rectangle bounds
-          const rectX = labelX;
-          const rectY = labelY - lineHeight; // Offset to account for text baseline
-          const rectWidth = textWidth;
-          const rectHeight = textHeight;
-          
-          // Find closest point on the rectangle to the circle center
-          // First determine which side of the rectangle is closest to the circle center
-          let closestX, closestY;
-          
-          // Calculate x-coordinate of closest point
-          if (annotation.x < rectX) {
-            closestX = rectX;
-          } else if (annotation.x > rectX + rectWidth) {
-            closestX = rectX + rectWidth;
-          } else {
-            closestX = annotation.x;
-          }
-          
-          // Calculate y-coordinate of closest point
-          if (annotation.y < rectY) {
-            closestY = rectY;
-          } else if (annotation.y > rectY + rectHeight) {
-            closestY = rectY + rectHeight;
-          } else {
-            closestY = annotation.y;
-          }
-          
-          // Calculate the starting point of the line on the circle's outline
-          const angle = Math.atan2(closestY - annotation.y, closestX - annotation.x);
-          const startX = annotation.x + annotation.radius * Math.cos(angle);
-          const startY = annotation.y + annotation.radius * Math.sin(angle);
-
-          // Draw line connecting the circle outline to the closest point on the rectangle
-          ctx.setLineDash([]); // Solid line for the connector
-          ctx.beginPath();
-          ctx.moveTo(startX, startY);
-          ctx.lineTo(closestX, closestY);
-          ctx.strokeStyle = "red";
-          ctx.lineWidth = 1;
-          ctx.stroke();
-
-          // Draw label with wrapping
-          if (annotation.label) {
-            ctx.font = "16px Arial";
-            ctx.fillStyle = "red";
-            // increase line height between lines of t3ext
-            const lineHeight = 16; // Adjusted line height for better readability
-
-            // Draw each line of text
-            lines.forEach((line, index) => {
-              ctx.fillText(line, labelX, labelY + index * lineHeight);
-            });
-          }
-        });
-      }
 
       ctx.setLineDash([]); // Reset line dash
 
@@ -540,7 +422,7 @@
   // (Manual pan/zoom handlers removed in favor of d3-zoom)
     
     $: if (ctx) {
-        data, opacity, anyFilterActive, selectedValues, searchQuery, showAnnotations, domainColumn, startDate, endDate, selectedData, selectedPointIds, impactHighlightIds; // Watch these props
+        data, opacity, anyFilterActive, selectedValues, searchQuery, domainColumn, startDate, endDate, selectedData, selectedPointIds, impactHighlightIds; // Watch these props
         if (data.length) draw(); // Redraw when any of these change
     }
 
@@ -576,7 +458,6 @@
         max="1"
         step="0.01"
         bind:value={opacity}
-        on:input={() => dispatch("opacityChange")}
       />
     </div>
     <canvas
@@ -603,7 +484,7 @@
   
     canvas {
       cursor: crosshair;
-      border-radius: 4px;
+      border-radius: 0;
       background-color: var(--cjr-white);
       width: 100%;
       height: 100%;

@@ -1,22 +1,14 @@
 <script>
-  import { onMount, createEventDispatcher } from 'svelte';
-  import { scaleOrdinal } from 'd3-scale';
-  import { schemeCategory10 } from 'd3-scale-chromatic';
+  import { createEventDispatcher } from 'svelte';
 
   const dispatch = createEventDispatcher();
 
   export let hoveredData;
   export let domainColumn;
   export let data;
-  export let colorScale;
   export let searchQuery = "";
   export let isPinned = false;
-  export let labelOverride = null;
   export let descriptionOverride = null;
-
-  onMount(() => {
-      colorScale.domain(data.map(d => d[domainColumn]));
-  });
 
   // Function to highlight search terms in text
   function highlightText(text, query) {
@@ -135,18 +127,18 @@
       <h1>{@html highlightText(hoveredData.title, searchQuery)}</h1>
     {/if}
     {#if authorsDetail.length}
-      <div class="authors-block">
-        <p class="authors-label">Authors</p>
-        <ul class="authors-list">
+      <div class="section">
+        <p class="section-label">Authors &amp; disclosed COI</p>
+        <ul class="author-tree">
           {#each authorsDetail as author}
-            <li class="author-item" class:has-coi={author.coi.length}>
+            <li class="author-node" class:has-coi={author.coi.length}>
               <span class="author-name">{author.name}</span>
               {#if author.coi.length}
-                <span class="author-coi-tags">
+                <ul class="coi-list">
                   {#each author.coi as org}
-                    <span class="coi-tag" title="Disclosed conflict of interest">{org}</span>
+                    <li class="coi-item" title="Disclosed conflict of interest">{org}</li>
                   {/each}
-                </span>
+                </ul>
               {/if}
             </li>
           {/each}
@@ -156,8 +148,8 @@
     {#if (hoveredData.keywords ?? hoveredData['mesh terms']) != null && (hoveredData.keywords ?? hoveredData['mesh terms']) !== ''}
       {@const terms = parseMeshTerms(hoveredData.keywords ?? hoveredData['mesh terms'])}
       {#if terms.length > 0}
-        <div class="mesh-terms-block">
-          <p class="mesh-terms-label">Keywords &amp; MeSH Terms</p>
+        <div class="section">
+          <p class="section-label">Keywords &amp; MeSH Terms</p>
           <div class="mesh-terms-tags">
             {#each terms as term}
               <span class="mesh-tag">{term}</span>
@@ -173,8 +165,8 @@
         const s = String(p).trim();
         return s && s !== selfPmid && inDataset.has(s);
       })}
-      <div class="impact-block">
-        <p class="impact-label">Cited By</p>
+      <div class="section">
+        <p class="section-label">Cited By</p>
         {#if citedInDataset.length > 0}
           <p class="impact-sublabel">Citing PMIDs: {hoveredData.citationCount} total, {citedInDataset.length} in this dataset:</p>
           <div class="cited-pmids">
@@ -205,8 +197,8 @@
         <p><em>{descriptionOverride(domainColumn, hoveredData[domainColumn])}</em></p>
       {/if}
     {/if}
-    <div class="article-text-block">
-      <p class="article-text-label">Abstract</p>
+    <div class="section section-abstract">
+      <p class="section-label">Abstract</p>
       <p class="article-text-content">{@html highlightText(hoveredData.abstract ?? hoveredData.text ?? '', searchQuery)}</p>
     </div>
   {:else}
@@ -218,8 +210,8 @@
 <style>
   .detail-card {
     padding: 0;
-    border-radius: 4px;
-    background: var(--cjr-white);
+    border-radius: 0;
+    background: transparent;
     height: 100%;
     overflow-y: auto;
     line-height: 1.5;
@@ -231,17 +223,13 @@
   }
 
   h1 {
-    margin: 0;
-    padding: 0;
-    font-weight: 400;
-  }
-
-  h1 {
     font-family: var(--font-heading);
     font-size: 1.1rem;
     font-weight: 500;
     line-height: 1.4;
     color: var(--cjr-text);
+    margin: 0;
+    padding: 0;
   }
 
   .title-link {
@@ -270,72 +258,72 @@
 
   .card-date {
     color: var(--cjr-text-muted);
-    padding: 0;
-    background: transparent;
-    border-radius: 0;
   }
 
-  .authors-block {
-    margin: 0.25rem 0;
-  }
-  .authors-label {
+  /* One consistent label for every section. */
+  .section-label {
     font-size: 0.7rem;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--cjr-blue);
-    margin: 0 0 0.35rem 0;
+    margin: 0 0 0.4rem 0;
   }
-  .authors-list {
-    font-size: 0.8rem;
-    line-height: 1.45;
-    color: var(--cjr-text);
+
+  /* Author → disclosed-COI hierarchy (indented tree with connector lines). */
+  .author-tree {
+    list-style: none;
     margin: 0;
     padding: 0;
-    list-style: none;
+    font-size: 0.82rem;
+    color: var(--cjr-text);
     word-wrap: break-word;
   }
-  .author-item {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 0.35rem 0.5rem;
-    padding: 0.15rem 0;
+  .author-node {
+    margin-bottom: 0.3rem;
   }
-  .author-item.has-coi {
-    border-left: 2px solid #a3361f;
-    padding-left: 0.5rem;
-    margin-left: -0.5rem;
+  .author-node:last-child {
+    margin-bottom: 0;
   }
   .author-name {
-    font-weight: 500;
+    font-weight: 600;
     color: var(--cjr-text);
-    padding: 0;
   }
-  .author-coi-tags {
-    display: inline-flex;
-    flex-wrap: wrap;
-    gap: 0.3rem;
-    padding: 0;
-    color: var(--cjr-text);
+  .coi-list {
+    list-style: none;
+    margin: 0.1rem 0 0;
+    padding-left: 0.5rem;
+  }
+  .coi-item {
+    position: relative;
+    padding: 0.12rem 0 0.12rem 0.85rem;
+    font-style: italic;
+    color: #a3361f;
+    line-height: 1.4;
+  }
+  .coi-item::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: -0.05rem;
+    bottom: 0;
+    width: 1px;
+    background: var(--cjr-border);
+  }
+  .coi-item:last-child::before {
+    bottom: auto;
+    height: 0.7rem;
+  }
+  .coi-item::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0.7rem;
+    width: 0.55rem;
+    height: 1px;
+    background: var(--cjr-border);
   }
 
-  .mesh-terms-block {
-    padding: 0.75rem 0;
-    margin: 0.25rem 0;
-  }
-  .impact-block {
-    padding: 0.5rem 0;
-    margin: 0.25rem 0;
-  }
-  .impact-label {
-    font-size: 0.7rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--cjr-blue);
-    margin: 0 0 0.35rem 0;
-  }
   .impact-sublabel {
     font-size: 0.72rem;
     color: var(--cjr-text-muted);
@@ -365,15 +353,6 @@
     font-style: italic;
   }
 
-  .mesh-terms-label {
-    font-size: 0.7rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--cjr-blue);
-    margin: 0 0 0.5rem 0;
-  }
-
   .mesh-terms-tags {
     display: flex;
     flex-wrap: wrap;
@@ -389,32 +368,13 @@
     color: var(--cjr-blue);
     background: rgba(37, 76, 111, 0.1);
     border: 1px solid rgba(37, 76, 111, 0.22);
-    border-radius: 999px;
+    border-radius: 0;
   }
 
-  .coi-tag {
-    display: inline-block;
-    padding: 0.1rem 0.45rem;
-    font-size: 0.72rem;
-    font-weight: 500;
-    color: #a3361f;
-    background: rgba(163, 54, 31, 0.08);
-    border: 1px solid rgba(163, 54, 31, 0.25);
-    border-radius: 999px;
-  }
-
-  .article-text-block {
-    margin-top: 0.5rem;
+  .section-abstract {
+    margin-top: 0.25rem;
     padding-top: 0.75rem;
     border-top: 1px solid var(--cjr-border);
-  }
-
-  .article-text-label {
-    font-size: 0.75rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    color: var(--cjr-text-muted);
-    margin: 0 0 0.4rem 0;
   }
 
   .article-text-content {
@@ -422,16 +382,6 @@
     line-height: 1.6;
     color: var(--cjr-text);
     margin: 0;
-  }
-
-  span {
-    padding: 4px 8px;
-    display: inline-block;
-    vertical-align: bottom;
-    border-radius: 4px;
-    color: white;
-    font-size: 0.8rem;
-    width: fit-content;
   }
 
   p {
@@ -458,7 +408,6 @@
     background-color: rgba(222, 90, 53, 0.25);
     color: var(--cjr-text);
     padding: 0 2px;
-    border-radius: 2px;
   }
 
   .pin-header {
@@ -487,7 +436,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 4px;
+    border-radius: 0;
   }
 
   .unpin-btn:hover {

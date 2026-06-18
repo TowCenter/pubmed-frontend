@@ -41,7 +41,3 @@ a {
 a:hover {
   color: var(--cjr-accent-hover);
 }
-
-.github-fork-ribbon:before {
-  background-color: var(--cjr-blue);
-}

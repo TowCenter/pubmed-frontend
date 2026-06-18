@@ -30,3 +30,9 @@ dist-ssr
 # Local vector store + model cache (regenerable, not used by the live build)
 lancedb
 .xenova-cache
+
+# Data snapshots — regenerated from Postgres at deploy time (predeploy →
+# export-data). Source of truth is the DB, so these are never committed.
+public/data.csv
+public/data-with-xy.csv
+public/coi-graph.json

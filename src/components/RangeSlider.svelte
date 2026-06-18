@@ -9,8 +9,6 @@
   const dispatch = createEventDispatcher();
   
   let slider;
-  let startThumb;
-  let endThumb;
   let isDragging = false;
   let currentThumb = null;
   let sliderRect = null;
@@ -156,17 +154,15 @@
     ></div>
   </div>
   
-  <div 
-    class="thumb start-thumb" 
-    bind:this={startThumb}
+  <div
+    class="thumb start-thumb"
     style="left: {startPercent}%"
     on:mousedown={(e) => handleMouseDown(e, 'start')}
     on:touchstart={(e) => handleTouchStart(e, 'start')}
   ></div>
   
-  <div 
+  <div
     class="thumb end-thumb"
-    bind:this={endThumb} 
     style="left: {endPercent}%"
     on:mousedown={(e) => handleMouseDown(e, 'end')}
     on:touchstart={(e) => handleTouchStart(e, 'end')}

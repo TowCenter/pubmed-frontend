@@ -8,7 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "export-data": "node --env-file=.env scripts/export-db.mjs",
-    "predeploy": "npm run export-data",
+    "load-neo4j": "node --env-file=.env scripts/load-neo4j.mjs",
+    "build-coi-graph": "node --env-file=.env scripts/build-coi-graph.mjs",
+    "predeploy": "npm run export-data && npm run build-coi-graph",
     "deploy": "vite build && gh-pages -d dist -b gh-pages"
   },
   "devDependencies": {
@@ -18,19 +20,15 @@
     "vite": "^3.1.0"
   },
   "dependencies": {
-    "d3": "^7.9.0",
     "d3-array": "^3.2.0",
     "d3-force": "^3.0.0",
-    "d3-format": "^3.1.0",
-    "d3-geo": "^3.0.1",
     "d3-scale": "^4.0.2",
     "d3-scale-chromatic": "^3.1.0",
     "d3-selection": "^3.0.0",
     "d3-zoom": "^3.0.0",
     "jszip": "^3.10.1",
-    "nouislider": "^15.8.1",
+    "neo4j-driver": "^6.1.0",
     "papaparse": "^5.5.2",
-    "path": "^0.12.7",
     "pg": "^8.21.0"
   }
 }
