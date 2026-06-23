@@ -9,6 +9,7 @@
   export let label = "";
   export let color = "var(--cjr-blue)";
   export let allowFreeText = false; // add typed value even if not in items (for PMIDs)
+  export let meta = null; // optional Map item -> secondary label (e.g. paper count)
 
   const dispatch = createEventDispatcher();
   let text = "";
@@ -16,11 +17,13 @@
   let activeIndex = 0;
 
   $: q = text.trim().toLowerCase();
-  $: matches = q
-    ? items
-        .filter((i) => i.toLowerCase().includes(q) && !selected.includes(i))
-        .slice(0, 20)
-    : [];
+  // With a query, substring-filter; on focus with no query, show the leading
+  // items (callers can pre-sort, e.g. authors by paper count) so the picker
+  // doubles as a ranked browse list.
+  $: matches = (q
+    ? items.filter((i) => i.toLowerCase().includes(q) && !selected.includes(i))
+    : items.filter((i) => !selected.includes(i))
+  ).slice(0, 20);
 
   function add(item) {
     if (!item || selected.includes(item)) return;
@@ -66,7 +69,10 @@
       {#each matches as m, i}
         <li class:active={i === activeIndex}
             on:mousedown|preventDefault={() => add(m)}
-            on:mouseenter={() => (activeIndex = i)}>{m}</li>
+            on:mouseenter={() => (activeIndex = i)}>
+          <span class="opt-name">{m}</span>
+          {#if meta && meta.get(m) != null}<span class="opt-meta">{meta.get(m)}</span>{/if}
+        </li>
       {/each}
     </ul>
   {/if}
@@ -93,6 +99,14 @@
     background: #fff; border: 1px solid var(--cjr-border); border-radius: 6px;
     max-height: 240px; overflow: auto; box-shadow: 0 6px 18px rgba(0,0,0,0.12);
   }
-  .menu li { padding: 6px 10px; font-size: 13px; cursor: pointer; }
+  .menu li {
+    padding: 6px 10px; font-size: 13px; cursor: pointer;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  }
   .menu li.active { background: var(--cjr-blue-focus); }
+  .opt-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .opt-meta {
+    flex-shrink: 0; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
+    color: var(--cjr-text-muted);
+  }
 </style>
