@@ -4,6 +4,12 @@
   import Scatterplot from "../components/Scatterplot.svelte";
   import RangeSlider from "../components/RangeSlider.svelte";
   import DetailCard from "../components/DetailCard.svelte";
+  import MultiSelect from "../components/MultiSelect.svelte";
+  // Author/Org/PMID selection shared with the COI network view. Picking any of
+  // these highlights the matching articles here and focuses the same nodes there.
+  import { selAuthors, selOrgs, selPmids, clearSharedFilters } from "../stores/sharedFilters.js";
+  // Variant → canonical name maps from nodes combined in the COI network view.
+  import { authorCanonical, orgCanonical } from "../stores/merges.js";
 
   // Resolve data URL from query params (url | filename [+ bucket]) or env fallback
   let resolvedDataUrl = "";
@@ -179,6 +185,53 @@
     uniqueValues = [];
   }
 
+  // --- shared (linked) Author / Org / PMID selection -------------------------
+  // Option lists for the map's linked-filter pickers, derived from the CSV. The
+  // author/coi_org values and PMIDs match the COI network's node names exactly,
+  // so a selection made in either view resolves in the other.
+  // Resolve a raw author/org name to its canonical (combined) name, if merged.
+  $: canonAuthor = (name) => $authorCanonical.get(name) || name;
+  $: canonOrg = (name) => $orgCanonical.get(name) || name;
+
+  $: linkedOrgOptions = data.length
+    ? [...new Set(data.flatMap((d) => parseColumnValueToItems(d.coi_org)).map(canonOrg))].sort(
+        (a, b) => String(a).localeCompare(String(b)),
+      )
+    : [];
+  $: linkedPmidOptions = data.length
+    ? data.map((d) => String(d.pmid ?? d.PMID ?? "").trim()).filter(Boolean).sort()
+    : [];
+
+  $: selAuthorsSet = new Set($selAuthors);
+  $: selOrgsSet = new Set($selOrgs);
+  $: selPmidsSet = new Set($selPmids);
+  $: hasLinkedFilter = $selAuthors.length > 0 || $selOrgs.length > 0 || $selPmids.length > 0;
+
+  // --- top authors by paper count (respects merges) --------------------------
+  // One paper counts once per (canonical) author, even if a variant appears
+  // twice in its author list.
+  $: topAuthors = data.length
+    ? (() => {
+        const counts = new Map();
+        for (const d of data) {
+          const seen = new Set();
+          for (const raw of parseColumnValueToItems(d.authors)) {
+            const a = canonAuthor(raw);
+            if (seen.has(a)) continue;
+            seen.add(a);
+            counts.set(a, (counts.get(a) || 0) + 1);
+          }
+        }
+        return [...counts.entries()]
+          .map(([name, count]) => ({ name, count }))
+          .sort((a, b) => b.count - a.count || String(a.name).localeCompare(String(b.name)));
+      })()
+    : [];
+  // Feed the Author picker: names ordered by paper count (so focusing it shows
+  // the most prolific authors first) plus a name -> count map for the badges.
+  $: authorOptionsByCount = topAuthors.map((t) => t.name);
+  $: authorCountMap = new Map(topAuthors.map((t) => [t.name, t.count]));
+
   // Loading/progress state
   let isLoading = false;
   let loadPhase = "idle"; // 'downloading' | 'unzipping' | 'parsing' | 'idle'
@@ -302,7 +355,7 @@
     const hasSelection =
       selectedValues.size > 0 && selectedValues.size < uniqueValues.length;
     const hasSearch = searchQuery && searchQuery.trim().length > 0;
-    anyFilterActive = !fullDateRange || hasSelection || hasSearch;
+    anyFilterActive = !fullDateRange || hasSelection || hasSearch || hasLinkedFilter;
 
     filteredData = data.map((d) => {
       // Undated articles (date === null) can't be placed on the timeline, so
@@ -336,7 +389,29 @@
         }
       }
 
-      const passes = inDateRange && inSelection && inSearch;
+      // Linked Author / Org / PMID selection (shared with the COI network).
+      // AND across dimensions: an article must satisfy every dimension that has
+      // a selection (match a selected author AND a selected org AND a selected
+      // PMID). Within one dimension, matching any selected value is enough.
+      let inLinked = true;
+      if (hasLinkedFilter) {
+        if (inLinked && selAuthorsSet.size > 0) {
+          inLinked = parseColumnValueToItems(d.authors).some((a) =>
+            selAuthorsSet.has(canonAuthor(a)),
+          );
+        }
+        if (inLinked && selOrgsSet.size > 0) {
+          inLinked = parseColumnValueToItems(d.coi_org).some((o) =>
+            selOrgsSet.has(canonOrg(o)),
+          );
+        }
+        if (inLinked && selPmidsSet.size > 0) {
+          const pmid = String(d.pmid ?? d.PMID ?? "").trim();
+          inLinked = selPmidsSet.has(pmid);
+        }
+      }
+
+      const passes = inDateRange && inSelection && inSearch && inLinked;
       return {
         ...d,
         isActive: anyFilterActive ? passes : true,
@@ -673,6 +748,9 @@
     highlightedData = [];
     selectedPointIds = new Set();
 
+    // Clear the shared Author / Org / PMID selection (also clears it in the network view)
+    clearSharedFilters();
+
     // Reset search
     searchQuery = "";
     highlightSearchQuery = "";
@@ -725,23 +803,6 @@
         </div>
       </section>
 
-      {#if allowedDomainColumns.length}
-        <section class="filter-section">
-          <label for="domain-column" class="filter-label">Highlight by column</label>
-          <select
-            id="domain-column"
-            class="filter-input filter-select"
-            on:change={handleDomainChange}
-            bind:value={domainColumn}
-          >
-            <option value="">Choose column</option>
-            {#each allowedDomainColumns as column}
-              <option value={column}>{columnLabel(column)}</option>
-            {/each}
-          </select>
-        </section>
-      {/if}
-
       {#if uniqueValues.length}
         <section class="filter-section filter-section-collapsible">
           <details class="filter-details" open>
@@ -778,6 +839,17 @@
           </details>
         </section>
       {/if}
+
+      <section class="filter-section filter-section-linked">
+        <div class="linked-fields">
+          <MultiSelect label="Author" items={authorOptionsByCount} meta={authorCountMap}
+            bind:selected={$selAuthors} placeholder="add author…" color="var(--cjr-blue)" />
+          <MultiSelect label="COI organization" items={linkedOrgOptions} bind:selected={$selOrgs}
+            placeholder="add org…" color="var(--cjr-accent)" />
+          <MultiSelect label="PMID" items={linkedPmidOptions} bind:selected={$selPmids}
+            placeholder="add PMID…" color="#5a7a52" allowFreeText={true} />
+        </div>
+      </section>
 
       <section class="filter-section">
         <span class="filter-label">Date range</span>
@@ -1203,6 +1275,18 @@
     line-height: 1.35;
     margin: 0.25rem 0 0 0;
   }
+
+  /* Linked Author/Org/PMID pickers (reused MultiSelect) must fit the narrow
+     left panel, so override its default 200px min-width. */
+  .linked-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+  .linked-fields :global(.ms) {
+    min-width: 0;
+  }
+
 
   .detail-panel {
     background: transparent;

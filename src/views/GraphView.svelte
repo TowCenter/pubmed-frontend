@@ -6,6 +6,11 @@
   import CoiNetwork from "../components/CoiNetwork.svelte";
   import AuthorScatter from "../components/AuthorScatter.svelte";
   import MultiSelect from "../components/MultiSelect.svelte";
+  // Author/Org/PMID selection is shared with the Semantic map view, so picking
+  // a node here also highlights the matching articles there (and vice versa).
+  import { selAuthors, selOrgs, selPmids, clearSharedFilters } from "../stores/sharedFilters.js";
+  // Node merges live in a shared store so the Semantic map view sees them too.
+  import { mergeGroups } from "../stores/merges.js";
 
   // Raw graph as loaded; the *rendered* graph is derived by applying the user's
   // merges (variant org/author names combined into a single node).
@@ -15,14 +20,8 @@
   let error = "";
   let selected = null;
 
-  let selAuthors = [];
-  let selOrgs = [];
-  let selPmids = [];
-
   // --- node merging: combine variants (e.g. the 14 JUUL spellings) into one ---
-  const MERGE_KEY = "coi-merges-v1";
-  let mergeGroups = []; // [{ id, name, label:'Org'|'Author', members:[rawNodeId,...] }]
-  let mergesLoaded = false;
+  // mergeGroups is the shared store: [{ id, name, label, members, memberNames }]
   // "Combine" panel UI state
   let showCombine = false;
   let mergeMode = "Org"; // pick variants from orgs or authors
@@ -41,12 +40,6 @@
 
   onMount(async () => {
     try {
-      try {
-        const saved = localStorage.getItem(MERGE_KEY);
-        if (saved) mergeGroups = JSON.parse(saved) || [];
-      } catch { /* ignore unreadable/blocked storage */ }
-      mergesLoaded = true;
-
       const res = await fetch(DATA_URL);
       if (!res.ok) throw new Error(`Could not load ${DATA_URL} (${res.status})`);
       const g = await res.json();
@@ -59,13 +52,18 @@
     }
   });
 
-  // Persist merges whenever they change (but not before the initial load).
-  $: if (mergesLoaded && typeof localStorage !== "undefined") {
-    try { localStorage.setItem(MERGE_KEY, JSON.stringify(mergeGroups)); } catch { /* quota/blocked */ }
-  }
-
   // Members are stored as raw node ids, so look-ups happen against the raw set.
   $: rawById = new Map(rawNodes.map((n) => [n.id, n]));
+
+  // Backfill memberNames on any legacy group saved before that field existed,
+  // so the map can resolve variants → canonical without loading the graph.
+  $: if (rawNodes.length && $mergeGroups.some((g) => !g.memberNames)) {
+    $mergeGroups = $mergeGroups.map((g) =>
+      g.memberNames
+        ? g
+        : { ...g, memberNames: g.members.map((id) => rawById.get(id)?.name).filter(Boolean) },
+    );
+  }
 
   // --- apply merges: collapse member nodes into one canonical node ------------
   function applyMerges(nodesIn, linksIn, groups) {
@@ -124,7 +122,7 @@
   }
 
   let nodes = [], links = [];
-  $: ({ nodes, links } = applyMerges(rawNodes, rawLinks, mergeGroups));
+  $: ({ nodes, links } = applyMerges(rawNodes, rawLinks, $mergeGroups));
 
   // Indices rebuilt whenever the merged graph changes.
   let authorsList = [], authorNames = [], orgNames = [], pmidList = [];
@@ -155,9 +153,9 @@
   // directly-selected node ids (drives the graph's focus)
   $: highlightIds = (() => {
     const s = new Set();
-    for (const name of selAuthors) { const id = authorIdByName.get(name); if (id) s.add(id); }
-    for (const name of selOrgs) { const id = orgIdByName.get(name); if (id) s.add(id); }
-    for (const pmid of selPmids) { const id = paperIdByPmid.get(pmid); if (id) s.add(id); }
+    for (const name of $selAuthors) { const id = authorIdByName.get(name); if (id) s.add(id); }
+    for (const name of $selOrgs) { const id = orgIdByName.get(name); if (id) s.add(id); }
+    for (const pmid of $selPmids) { const id = paperIdByPmid.get(pmid); if (id) s.add(id); }
     return s;
   })();
 
@@ -172,17 +170,17 @@
     return s;
   })();
 
-  $: hasFilter = selAuthors.length || selOrgs.length || selPmids.length;
+  $: hasFilter = $selAuthors.length || $selOrgs.length || $selPmids.length;
   $: authorCount = authorsList.length;
   $: orgCount = nodes.filter((n) => n.label === "Org").length;
   $: paperCount = nodes.filter((n) => n.label === "Paper").length;
 
-  function clearAll() { selAuthors = []; selOrgs = []; selPmids = []; }
-  function addAuthor(name) { selAuthors = [...new Set([...selAuthors, name])]; }
+  function clearAll() { clearSharedFilters(); }
+  function addAuthor(name) { $selAuthors = [...new Set([...$selAuthors, name])]; }
   function addFromDetail(n) {
     if (n.label === "Author") addAuthor(n.name);
-    else if (n.label === "Org") selOrgs = [...new Set([...selOrgs, n.name])];
-    else if (n.label === "Paper") selPmids = [...new Set([...selPmids, n.name])];
+    else if (n.label === "Org") $selOrgs = [...new Set([...$selOrgs, n.name])];
+    else if (n.label === "Paper") $selPmids = [...new Set([...$selPmids, n.name])];
   }
 
   // --- combine actions --------------------------------------------------------
@@ -210,7 +208,7 @@
     // Resolve to RAW member ids, absorbing any already-merged group re-picked.
     const rawMembers = new Set();
     const absorb = new Set();
-    const groupById = new Map(mergeGroups.map((g) => [g.id, g]));
+    const groupById = new Map($mergeGroups.map((g) => [g.id, g]));
     for (const id of ids) {
       const g = groupById.get(id);
       if (g) { absorb.add(g.id); for (const m of g.members) rawMembers.add(m); }
@@ -218,11 +216,12 @@
     }
     if (rawMembers.size < 2) return;
     const members = [...rawMembers];
+    const memberNames = members.map((id) => rawById.get(id)?.name).filter(Boolean);
     const name = mergeName.trim() || bestName(members);
     const gid = "merge:" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    mergeGroups = [
-      ...mergeGroups.filter((g) => !absorb.has(g.id)),
-      { id: gid, name, label: mergeMode, members },
+    $mergeGroups = [
+      ...$mergeGroups.filter((g) => !absorb.has(g.id)),
+      { id: gid, name, label: mergeMode, members, memberNames },
     ];
     mergePick = [];
     mergeName = "";
@@ -230,7 +229,7 @@
   }
 
   function splitGroup(id) {
-    mergeGroups = mergeGroups.filter((g) => g.id !== id);
+    $mergeGroups = $mergeGroups.filter((g) => g.id !== id);
     if (selected && selected.id === id) selected = null;
   }
 
@@ -243,11 +242,11 @@
 
 <div class="graph-view">
   <div class="controls">
-    <MultiSelect label="Author" items={authorNames} bind:selected={selAuthors}
+    <MultiSelect label="Author" items={authorNames} bind:selected={$selAuthors}
       placeholder="add author…" color="var(--cjr-blue)" />
-    <MultiSelect label="Organization" items={orgNames} bind:selected={selOrgs}
+    <MultiSelect label="Organization" items={orgNames} bind:selected={$selOrgs}
       placeholder="add org…" color="var(--cjr-accent)" />
-    <MultiSelect label="PMID" items={pmidList} bind:selected={selPmids}
+    <MultiSelect label="PMID" items={pmidList} bind:selected={$selPmids}
       placeholder="add PMID…" color="#5a7a52" allowFreeText={true} />
     <div class="meta">
       {#if hasFilter}
@@ -257,7 +256,7 @@
         <span class="count">{paperCount} papers · {authorCount} authors · {orgCount} orgs</span>
       {/if}
       <button class="combine-toggle" class:on={showCombine} on:click={() => (showCombine = !showCombine)}>
-        Combine nodes{#if mergeGroups.length} · {mergeGroups.length}{/if}
+        Combine nodes{#if $mergeGroups.length} · {$mergeGroups.length}{/if}
       </button>
     </div>
   </div>
@@ -280,9 +279,9 @@
         </button>
       </div>
 
-      {#if mergeGroups.length}
+      {#if $mergeGroups.length}
         <div class="merge-list">
-          {#each mergeGroups as g (g.id)}
+          {#each $mergeGroups as g (g.id)}
             <span class="merge-chip" class:author={g.label === "Author"}>
               <b>{g.name}</b><em>{g.members.length}</em>
               <button on:click={() => splitGroup(g.id)} title="Split back into variants" aria-label="Split">×</button>
