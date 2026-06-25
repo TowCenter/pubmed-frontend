@@ -10,6 +10,9 @@
   export let color = "var(--cjr-blue)";
   export let allowFreeText = false; // add typed value even if not in items (for PMIDs)
   export let meta = null; // optional Map item -> secondary label (e.g. paper count)
+  export let colors = null; // optional Map item -> color (per-chip color; falls back to `color`)
+
+  $: chipColor = (item) => (colors && colors.get(item)) || color;
 
   const dispatch = createEventDispatcher();
   let text = "";
@@ -53,7 +56,7 @@
   {#if label}<span class="lbl">{label}</span>{/if}
   <div class="box">
     {#each selected as item}
-      <span class="chip">{item}<button on:click={() => remove(item)} aria-label="remove">×</button></span>
+      <span class="chip" style="background:{chipColor(item)}">{item}<button on:click={() => remove(item)} aria-label="remove">×</button></span>
     {/each}
     <input
       bind:value={text}

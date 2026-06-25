@@ -10,6 +10,7 @@
   import { selAuthors, selOrgs, selPmids, clearSharedFilters } from "../stores/sharedFilters.js";
   // Variant → canonical name maps from nodes combined in the COI network view.
   import { authorCanonical, orgCanonical } from "../stores/merges.js";
+  import { schemeTableau10 } from "d3-scale-chromatic";
 
   // Resolve data URL from query params (url | filename [+ bucket]) or env fallback
   let resolvedDataUrl = "";
@@ -207,6 +208,21 @@
   $: selPmidsSet = new Set($selPmids);
   $: hasLinkedFilter = $selAuthors.length > 0 || $selOrgs.length > 0 || $selPmids.length > 0;
 
+  // Per-selection colors: each selected author/org gets its own hue so the
+  // highlighted dots (and the picker chips, used as a legend) are color-coded by
+  // which selection they match. Authors and orgs share one palette walk so no
+  // two selections collide on the same color across the two dimensions.
+  const GROUP_PALETTE = schemeTableau10;
+  $: authorColors = new Map(
+    $selAuthors.map((a, i) => [a, GROUP_PALETTE[i % GROUP_PALETTE.length]]),
+  );
+  $: orgColors = new Map(
+    $selOrgs.map((o, i) => [
+      o,
+      GROUP_PALETTE[($selAuthors.length + i) % GROUP_PALETTE.length],
+    ]),
+  );
+
   // --- top authors by paper count (respects merges) --------------------------
   // One paper counts once per (canonical) author, even if a variant appears
   // twice in its author list.
@@ -394,16 +410,25 @@
       // a selection (match a selected author AND a selected org AND a selected
       // PMID). Within one dimension, matching any selected value is enough.
       let inLinked = true;
+      // Color of the selection this article belongs to (first matching author,
+      // else first matching org, in selection order). null = no per-group color.
+      let groupColor = null;
       if (hasLinkedFilter) {
         if (inLinked && selAuthorsSet.size > 0) {
-          inLinked = parseColumnValueToItems(d.authors).some((a) =>
-            selAuthorsSet.has(canonAuthor(a)),
-          );
+          const items = parseColumnValueToItems(d.authors).map(canonAuthor);
+          inLinked = items.some((a) => selAuthorsSet.has(a));
+          if (inLinked) {
+            const hit = $selAuthors.find((a) => items.includes(a));
+            if (hit) groupColor = authorColors.get(hit);
+          }
         }
         if (inLinked && selOrgsSet.size > 0) {
-          inLinked = parseColumnValueToItems(d.coi_org).some((o) =>
-            selOrgsSet.has(canonOrg(o)),
-          );
+          const items = parseColumnValueToItems(d.coi_org).map(canonOrg);
+          inLinked = items.some((o) => selOrgsSet.has(o));
+          if (inLinked && !groupColor) {
+            const hit = $selOrgs.find((o) => items.includes(o));
+            if (hit) groupColor = orgColors.get(hit);
+          }
         }
         if (inLinked && selPmidsSet.size > 0) {
           const pmid = String(d.pmid ?? d.PMID ?? "").trim();
@@ -416,6 +441,7 @@
         ...d,
         isActive: anyFilterActive ? passes : true,
         isHighlighted: anyFilterActive ? passes : true,
+        groupColor: passes ? groupColor : null,
       };
     });
 
@@ -843,9 +869,10 @@
       <section class="filter-section filter-section-linked">
         <div class="linked-fields">
           <MultiSelect label="Author" items={authorOptionsByCount} meta={authorCountMap}
-            bind:selected={$selAuthors} placeholder="add author…" color="var(--cjr-blue)" />
+            bind:selected={$selAuthors} placeholder="add author…" color="var(--cjr-blue)"
+            colors={authorColors} />
           <MultiSelect label="COI organization" items={linkedOrgOptions} bind:selected={$selOrgs}
-            placeholder="add org…" color="var(--cjr-accent)" />
+            placeholder="add org…" color="var(--cjr-accent)" colors={orgColors} />
           <MultiSelect label="PMID" items={linkedPmidOptions} bind:selected={$selPmids}
             placeholder="add PMID…" color="#5a7a52" allowFreeText={true} />
         </div>

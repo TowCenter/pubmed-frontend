@@ -8,8 +8,9 @@
   import { select } from "d3-selection";
   import { zoom, zoomIdentity } from "d3-zoom";
 
-  // All dots share one color; selected/highlighted state is shown via opacity,
-  // not hue (no per-value coloring).
+  // Base dot color. Dots fall back to this unless the parent assigns a per-point
+  // `groupColor` (one hue per selected author/org); active/inactive is otherwise
+  // shown via opacity.
   const DOT_COLOR = "#1f77b4";
 
   export let data = [];
@@ -137,7 +138,9 @@
         // Use isActive and isHighlighted from filteredData
         ctx.beginPath();
         ctx.arc(margin.left + xScale(d.x), margin.top + yScale(d.y), Math.max(0.5, radius / t.k), 0, Math.PI * 2);
-        ctx.fillStyle = DOT_COLOR;
+        // Active dots use their selection's group color (set per-point in the
+        // parent); everything else falls back to the shared base color.
+        ctx.fillStyle = (d.isActive && d.groupColor) ? d.groupColor : DOT_COLOR;
         // Opacity: when no filter active, slider controls all; when filter active, active=0.9 and inactive=slider
         const alpha = Math.max(0, Math.min(1, opacity));
         const activeAlpha = 0.9;
@@ -155,7 +158,7 @@
         const baseY = margin.top + yScale(selectedData.y);
         ctx.beginPath();
         ctx.arc(baseX, baseY, Math.max(0.5, (radius + 2) / t.k), 0, Math.PI * 2);
-        ctx.fillStyle = DOT_COLOR;
+        ctx.fillStyle = selectedData.groupColor || DOT_COLOR;
         ctx.globalAlpha = 1;
         ctx.fill();
         ctx.strokeStyle = '#254c6f';
@@ -169,7 +172,7 @@
         const baseY = margin.top + yScale(hoveredData.y);
         ctx.beginPath();
         ctx.arc(baseX, baseY, Math.max(0.5, radius / t.k), 0, Math.PI * 2);
-        ctx.fillStyle = DOT_COLOR;
+        ctx.fillStyle = hoveredData.groupColor || DOT_COLOR;
         ctx.globalAlpha = 1;
         ctx.fill();
         ctx.strokeStyle = 'black';
