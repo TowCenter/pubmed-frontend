@@ -191,16 +191,21 @@ function buildGraph({ coi, authorship, papersByAuthor, citesByAuthor, titleByPmi
   return { nodes: [...nodes.values()], links };
 }
 
+// Layout collision footprint per node (degree-scaled). The renderer sizes the
+// drawn dots from this exact radius so they can never overlap on screen.
+export const collideRadius = (n) => 6 + 2.2 * Math.sqrt(n.degree || 1);
+
 function layout(nodes, links) {
-  const radius = (n) => 2 + Math.sqrt(n.degree || 1);
+  // Collision-dominated pack: modest repulsion + a strong, many-iteration
+  // collide force so nodes settle into a tight, non-overlapping arrangement
+  // (rather than a sparse cloud where fit-to-screen makes dots invisible).
   const sim = forceSimulation(nodes)
-    .force("charge", forceManyBody().strength(-70).theta(0.9))
-    .force("link", forceLink(links).id((d) => d.id).distance(30).strength(0.4))
+    .force("charge", forceManyBody().strength(-90).theta(0.9).distanceMax(1500))
+    .force("link", forceLink(links).id((d) => d.id).distance(36).strength(0.5))
     .force("center", forceCenter(0, 0))
-    // collide keeps nodes from overlapping (radius + generous padding)
-    .force("collide", forceCollide().radius((d) => radius(d) + 4).iterations(3))
+    .force("collide", forceCollide().radius((d) => collideRadius(d) + 2).iterations(8))
     .stop();
-  const ticks = 400;
+  const ticks = 600;
   for (let i = 0; i < ticks; i++) {
     sim.tick();
     if (i % 40 === 0) process.stdout.write(`\r  layout: ${i}/${ticks}   `);
@@ -217,8 +222,20 @@ async function main() {
     `  ${count("Paper")} papers, ${count("Author")} authors, ${count("Org")} orgs, ${links.length} edges`,
   );
 
-  console.log("Running force layout (offline)…");
-  layout(nodes, links);
+  // The overview shows only the COI subgraph (and the focus view re-runs its
+  // own layout), so lay out just the COI nodes here — otherwise the 35k non-COI
+  // nodes pull the COI ones into a single central blob. Non-COI nodes get a
+  // small random seed (their position is only ever a starting point for focus).
+  console.log("Running force layout for the COI overview (offline)…");
+  const coiIds = new Set(nodes.filter((n) => n.coi !== false).map((n) => n.id));
+  const coiNodes = nodes.filter((n) => coiIds.has(n.id));
+  const coiLinks = links.filter((l) => coiIds.has(l.source) && coiIds.has(l.target));
+  layout(coiNodes, coiLinks);
+  for (const n of nodes) {
+    if (coiIds.has(n.id)) continue;
+    n.x = (Math.random() - 0.5) * 50;
+    n.y = (Math.random() - 0.5) * 50;
+  }
 
   const outNodes = nodes.map((n) => ({
     id: n.id, label: n.label, name: n.name, degree: n.degree,
