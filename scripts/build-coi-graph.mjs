@@ -44,7 +44,7 @@ async function readData() {
   });
   try {
     const q = (sql) => pool.query(sql).then((r) => r.rows);
-    const [coi, authorPapers, authorCites, papers] = await Promise.all([
+    const [coi, authorship, authorPapers, authorCites, papers] = await Promise.all([
       // author -> org COI on a specific paper, ';'-split into atomic orgs.
       q(`SELECT name, org, pmid
            FROM (
@@ -56,6 +56,24 @@ async function readData() {
               WHERE NULLIF(btrim(au.full_name), '') IS NOT NULL
            ) s
           WHERE NULLIF(s.org, '') IS NOT NULL`),
+      // Full authorship (paper -> author) for EVERY paper written by a
+      // COI-disclosing author — including that paper's non-COI co-authors. This
+      // is the "COI authors' full output" scope: all their papers + co-authors,
+      // not just the COI-disclosed ones.
+      q(`WITH coi_authors AS (
+            SELECT DISTINCT author_id FROM author_coi
+          ),
+          coi_articles AS (
+            SELECT DISTINCT aa.article_id
+              FROM article_author aa
+              JOIN coi_authors ca ON ca.author_id = aa.author_id
+          )
+          SELECT a.pmid AS pmid, btrim(au.full_name) AS name
+            FROM article_author aa
+            JOIN author au ON au.author_id = aa.author_id
+            JOIN article a ON a.article_id = aa.article_id
+            JOIN coi_articles ca ON ca.article_id = aa.article_id
+           WHERE NULLIF(btrim(au.full_name), '') IS NOT NULL`),
       q(`SELECT btrim(au.full_name) AS name, count(DISTINCT aa.article_id)::int AS papers
            FROM article_author aa
            JOIN author au ON au.author_id = aa.author_id
@@ -72,6 +90,7 @@ async function readData() {
     ]);
     return {
       coi,
+      authorship,
       papersByAuthor: new Map(authorPapers.map((r) => [r.name, r.papers])),
       citesByAuthor: new Map(authorCites.map((r) => [r.name, r.citations])),
       titleByPmid: new Map(papers.map((r) => [String(r.pmid), r.title || ""])),
@@ -81,7 +100,7 @@ async function readData() {
   }
 }
 
-function buildGraph({ coi, papersByAuthor, citesByAuthor, titleByPmid }) {
+function buildGraph({ coi, authorship, papersByAuthor, citesByAuthor, titleByPmid }) {
   const aId = (n) => "a:" + n;
   const oId = (n) => "o:" + n;
   const pId = (n) => "p:" + n;
@@ -91,26 +110,65 @@ function buildGraph({ coi, papersByAuthor, citesByAuthor, titleByPmid }) {
   const coiWeight = new Map();  // author|org -> # papers
   const authored = new Set();   // author|pmid dedupe
 
-  const ensure = (id, make) => {
-    if (!nodes.has(id)) nodes.set(id, make());
+  // Which names/pmids carry an actual COI disclosure (vs. plain co-authors and
+  // their non-disclosed papers). Used to flag nodes so the UI can distinguish.
+  const coiAuthorNames = new Set(coi.map((r) => r.name));
+  const coiPmids = new Set(coi.map((r) => String(r.pmid)));
+  // (author, paper) pairs where the author actually disclosed a COI on that
+  // paper. Marks the AUTHORED edge so the UI can recount COI papers after merges
+  // (the graph otherwise can't tell a disclosed paper from a plain co-authorship).
+  const disclosedPair = new Set(coi.map((r) => aId(r.name) + "|" + pId(String(r.pmid))));
+
+  const ensureAuthor = (name) => {
+    const id = aId(name);
+    if (!nodes.has(id)) {
+      nodes.set(id, {
+        id, label: "Author", name,
+        papers: papersByAuthor.get(name) || 0, citations: citesByAuthor.get(name) || 0,
+        coiOrgs: 0, coiPapers: 0, degree: 0, coi: coiAuthorNames.has(name),
+      });
+    }
+    return nodes.get(id);
+  };
+  const ensureOrg = (name) => {
+    const id = oId(name);
+    if (!nodes.has(id)) nodes.set(id, { id, label: "Org", name, degree: 0 });
+    return nodes.get(id);
+  };
+  const ensurePaper = (pmid) => {
+    const id = pId(pmid);
+    if (!nodes.has(id)) {
+      nodes.set(id, {
+        id, label: "Paper", name: pmid, title: titleByPmid.get(pmid) || "",
+        degree: 0, coi: coiPmids.has(pmid),
+      });
+    }
     return nodes.get(id);
   };
 
+  // 1) Full authorship: paper -> author for every paper by a COI author,
+  //    including non-COI co-authors.
+  for (const r of authorship) {
+    const pmid = String(r.pmid);
+    const author = ensureAuthor(r.name);
+    const paper = ensurePaper(pmid);
+    const aKey = author.id + "|" + paper.id;
+    if (!authored.has(aKey)) {
+      authored.add(aKey);
+      links.push({ source: paper.id, target: author.id, rel: "AUTHORED", coi: disclosedPair.has(aKey) });
+      author.degree += 1;
+      paper.degree += 1;
+    }
+  }
+
+  // 2) COI disclosures: author -> org (weighted), plus per-author COI paper count.
+  const coiPapersByAuthor = new Map(); // name -> Set(pmid)
   for (const r of coi) {
     const pmid = String(r.pmid);
-    const author = ensure(aId(r.name), () => ({
-      id: aId(r.name), label: "Author", name: r.name,
-      papers: papersByAuthor.get(r.name) || 0, citations: citesByAuthor.get(r.name) || 0,
-      coiOrgs: 0, coiPapers: 0, degree: 0,
-    }));
-    const org = ensure(oId(r.org), () => ({
-      id: oId(r.org), label: "Org", name: r.org, degree: 0,
-    }));
-    const paper = ensure(pId(pmid), () => ({
-      id: pId(pmid), label: "Paper", name: pmid, title: titleByPmid.get(pmid) || "", degree: 0,
-    }));
+    const author = ensureAuthor(r.name);
+    const org = ensureOrg(r.org);
+    ensurePaper(pmid); // normally already created above
 
-    // author -> org (DISCLOSED_COI), weighted by # papers
     const pairKey = author.id + "|" + org.id;
     coiWeight.set(pairKey, (coiWeight.get(pairKey) || 0) + 1);
     if (!coiPair.has(pairKey)) {
@@ -120,17 +178,14 @@ function buildGraph({ coi, papersByAuthor, citesByAuthor, titleByPmid }) {
       author.coiOrgs += 1;
       org.degree += 1;
     }
-
-    // paper -> author (AUTHORED, COI-disclosing author on this paper)
-    const aKey = author.id + "|" + paper.id;
-    if (!authored.has(aKey)) {
-      authored.add(aKey);
-      links.push({ source: paper.id, target: author.id, rel: "AUTHORED" });
-      author.degree += 1;
-      author.coiPapers += 1;
-      paper.degree += 1;
-    }
+    if (!coiPapersByAuthor.has(r.name)) coiPapersByAuthor.set(r.name, new Set());
+    coiPapersByAuthor.get(r.name).add(pmid);
   }
+  for (const [name, set] of coiPapersByAuthor) {
+    const a = nodes.get(aId(name));
+    if (a) a.coiPapers = set.size;
+  }
+
   for (const l of links) if (l.rel === "DISCLOSED_COI" && l._pk) { l.weight = coiWeight.get(l._pk); delete l._pk; }
 
   return { nodes: [...nodes.values()], links };
@@ -167,8 +222,8 @@ async function main() {
 
   const outNodes = nodes.map((n) => ({
     id: n.id, label: n.label, name: n.name, degree: n.degree,
-    ...(n.label === "Author" ? { papers: n.papers, citations: n.citations, coiOrgs: n.coiOrgs, coiPapers: n.coiPapers } : {}),
-    ...(n.label === "Paper" ? { title: n.title } : {}),
+    ...(n.label === "Author" ? { papers: n.papers, citations: n.citations, coiOrgs: n.coiOrgs, coiPapers: n.coiPapers, coi: n.coi } : {}),
+    ...(n.label === "Paper" ? { title: n.title, coi: n.coi } : {}),
     x: Math.round(n.x * 10) / 10, y: Math.round(n.y * 10) / 10,
   }));
   const outLinks = links.map((l) => ({
@@ -176,6 +231,7 @@ async function main() {
     target: typeof l.target === "object" ? l.target.id : l.target,
     rel: l.rel,
     ...(l.rel === "DISCLOSED_COI" ? { weight: l.weight } : {}),
+    ...(l.rel === "AUTHORED" && l.coi ? { coi: true } : {}),
   }));
 
   fs.writeFileSync(OUT, JSON.stringify({ nodes: outNodes, links: outLinks }));

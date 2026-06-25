@@ -12,6 +12,22 @@
 
   const dispatch = createEventDispatcher();
   const COLORS = { Paper: "#5a7a52", Author: "#254c6f", Org: "#DE5A35" };
+  // Lighter shades for nodes with no COI disclosure (plain co-authors and the
+  // papers they wrote without disclosing), so the COI signal stays prominent.
+  const COLORS_MUTED = { Paper: "#aac6a2", Author: "#9aafc6" };
+  // n.coi === false only after the expanded graph is rebuilt; older data (no
+  // `coi` field) falls back to the full color, so this stays backward-compatible.
+  function nodeColor(n) {
+    if (n.coi === false && COLORS_MUTED[n.label]) return COLORS_MUTED[n.label];
+    return COLORS[n.label] || "#999";
+  }
+  // Size multiplier: directly-selected nodes are biggest, then nodes shared by
+  // 2+ selections (e.g. co-authored papers), then everything else.
+  function nodeScale(n) {
+    if (selSet.has(n.id)) return 2.6;
+    if (view.shared.has(n.id)) return 1.9;
+    return 1;
+  }
 
   let containerEl, canvas, ctx;
   let width = 800, height = 600, dpr = 1;
@@ -23,8 +39,15 @@
   let show = { Paper: true, Author: true, Org: true };
   function toggle(label) { show = { ...show, [label]: !show[label] }; }
 
-  $: visibleIds = new Set(nodes.filter((n) => show[n.label]).map((n) => n.id));
-  $: fNodes = nodes.filter((n) => show[n.label]);
+  // Directly-selected node ids (from the Author/Org/PMID filters). These stay
+  // visible even when their type is hidden via the legend, so e.g. hiding Org
+  // leaves only the selected org(s) on screen.
+  $: selSet = highlightIds || new Set();
+
+  // Reference show + selSet directly in each reactive block so Svelte re-runs
+  // them when either changes (selected nodes survive a hidden type).
+  $: fNodes = nodes.filter((n) => show[n.label] || selSet.has(n.id));
+  $: visibleIds = new Set(fNodes.map((n) => n.id));
   $: fLinks = links.filter((l) => visibleIds.has(l.source) && visibleIds.has(l.target));
 
   function buildNeighbors(ls) {
@@ -45,13 +68,13 @@
   }
 
   // --- the current view: full overview, or a freshly-laid-out focus subgraph ---
-  let view = { nodes: [], links: [], byId: new Map(), neighbors: new Map(), focus: false };
+  let view = { nodes: [], links: [], byId: new Map(), neighbors: new Map(), focus: false, shared: new Set() };
 
   $: buildView(highlightIds, fNodes, fLinks);
 
   function buildView(hi, allNodes, allLinks) {
     if (!allNodes.length) {
-      view = { nodes: [], links: [], byId: new Map(), neighbors: new Map(), focus: false };
+      view = { nodes: [], links: [], byId: new Map(), neighbors: new Map(), focus: false, shared: new Set() };
       draw();
       return;
     }
@@ -60,17 +83,68 @@
     const focus = hi && hi.size > 0;
 
     if (!focus) {
-      view = { nodes: allNodes, links: allLinks, byId: byIdAll, neighbors: neighborsAll, focus: false };
+      // Overview = the COI network only (authors/papers that carry a disclosure,
+      // plus orgs). The full set of papers and co-authors is large, so it's only
+      // revealed when you select a node (the focus branch below).
+      const ov = allNodes.filter((n) => n.coi !== false);
+      const ovById = new Map(ov.map((n) => [n.id, n]));
+      const ovLinks = allLinks.filter((l) => ovById.has(l.source) && ovById.has(l.target));
+      view = { nodes: ov, links: ovLinks, byId: ovById, neighbors: buildNeighbors(ovLinks), focus: false, shared: new Set() };
       frameAndDraw();
       return;
     }
 
-    // visible = selected (that are present) + 1-hop neighbors
-    const visible = new Set();
-    for (const id of hi) {
-      if (!byIdAll.has(id)) continue;
-      visible.add(id);
-      for (const nb of neighborsAll.get(id) || []) visible.add(nb);
+    // Show only what's relevant to the selection (not every neighbor).
+    const selected = [...hi].filter((id) => byIdAll.has(id));
+    const labelOf = (id) => byIdAll.get(id)?.label;
+    const authorsOf = (id) =>
+      [...(neighborsAll.get(id) || [])].filter((nb) => labelOf(nb) === "Author");
+    const visible = new Set(selected);
+    let shared = new Set();
+
+    if (selected.length >= 2) {
+      // Each selected node constrains which AUTHORS are relevant:
+      //   selected Author → authors who co-authored with them (+ themselves)
+      //   selected Org    → authors who disclosed that org
+      //   selected Paper  → authors on that paper
+      // Relevant authors must satisfy EVERY selected constraint (intersection),
+      // e.g. "authors who disclosed Juul AND co-authored a paper with Polosa".
+      const constraintSets = selected.map((id) => {
+        if (labelOf(id) === "Author") {
+          const co = new Set([id]);
+          for (const p of neighborsAll.get(id) || []) {
+            if (labelOf(p) === "Paper") for (const a of authorsOf(p)) co.add(a);
+          }
+          return co;
+        }
+        return new Set(authorsOf(id)); // Org or Paper → its incident authors
+      });
+      let relevant = new Set(constraintSets[0]);
+      for (let i = 1; i < constraintSets.length; i++)
+        relevant = new Set([...relevant].filter((x) => constraintSets[i].has(x)));
+
+      // Author set = selected authors + relevant authors.
+      const authorSet = new Set(relevant);
+      for (const id of selected) if (labelOf(id) === "Author") authorSet.add(id);
+      for (const a of authorSet) visible.add(a);
+
+      // Bridge papers: those co-authored by 2+ of these authors, so the
+      // co-authorship links between them are actually drawn.
+      const paperCount = new Map();
+      for (const a of authorSet) {
+        for (const nb of neighborsAll.get(a) || []) {
+          if (labelOf(nb) === "Paper") paperCount.set(nb, (paperCount.get(nb) || 0) + 1);
+        }
+      }
+      for (const [pid, c] of paperCount) if (c >= 2) visible.add(pid);
+
+      // Emphasize the relevant authors (the answer to the cross-filter query).
+      shared = new Set([...relevant].filter((id) => !hi.has(id)));
+    } else {
+      // Single selection: that node + its direct (1-hop) neighbors.
+      for (const id of selected) {
+        for (const nb of neighborsAll.get(id) || []) visible.add(nb);
+      }
     }
 
     const sub = [...visible].map((id) => ({ ...byIdAll.get(id) })).filter(Boolean);
@@ -95,7 +169,7 @@
     const ticks = sub.length > 600 ? 120 : 300;
     for (let i = 0; i < ticks; i++) sim.tick();
 
-    view = { nodes: sub, links: subLinks, byId, neighbors, focus: true };
+    view = { nodes: sub, links: subLinks, byId, neighbors, focus: true, shared };
     frameAndDraw();
   }
 
@@ -166,10 +240,19 @@
     // nodes
     for (const n of view.nodes) {
       ctx.globalAlpha = onHover(n.id) ? 1 : 0.1;
-      ctx.fillStyle = COLORS[n.label] || "#999";
+      ctx.fillStyle = nodeColor(n);
+      const scale = nodeScale(n);
+      const r = (radius(n) * scale) / Math.sqrt(t.k);
       ctx.beginPath();
-      ctx.arc(px(n), py(n), radius(n) / Math.sqrt(t.k), 0, 2 * Math.PI);
+      ctx.arc(px(n), py(n), r, 0, 2 * Math.PI);
       ctx.fill();
+      if (scale > 1) {
+        // ring emphasizes selected (biggest) and shared nodes
+        const isSel = selSet.has(n.id);
+        ctx.lineWidth = (isSel ? 2.2 : 1.5) / t.k;
+        ctx.strokeStyle = isSel ? "#000" : "#111";
+        ctx.stroke();
+      }
     }
     ctx.globalAlpha = 1;
 
@@ -190,16 +273,24 @@
     ctx.textAlign = "center";
     ctx.textBaseline = "alphabetic";
 
-    // Candidates: in focus, every Author/Org; always the hovered node.
+    // Candidates: selected + shared nodes (always), every Author/Org in focus,
+    // plus hovered.
     const ids = [];
+    for (const id of selSet) if (view.byId.has(id)) ids.push(id);
+    for (const id of view.shared) if (!ids.includes(id)) ids.push(id);
     if (view.focus) {
-      for (const n of view.nodes) if (n.label !== "Paper") ids.push(n.id);
+      for (const n of view.nodes)
+        if (n.label !== "Paper" && !ids.includes(n.id)) ids.push(n.id);
     }
     if (hovered && !ids.includes(hovered.id)) ids.push(hovered.id);
 
-    // Priority order: hovered first, then by degree (most-connected win space).
+    // Priority order: hovered, then selected, then shared, then by degree
+    // (most-connected win the remaining space).
+    const rank = (id) =>
+      (hovered && id === hovered.id ? 4 : 0) + (selSet.has(id) ? 2 : 0) + (view.shared.has(id) ? 1 : 0);
     ids.sort((a, b) => {
-      if (hovered) { if (a === hovered.id) return -1; if (b === hovered.id) return 1; }
+      const dr = rank(b) - rank(a);
+      if (dr) return dr;
       const na = view.byId.get(a), nb = view.byId.get(b);
       return (nb?.degree || 0) - (na?.degree || 0);
     });
@@ -213,13 +304,14 @@
     for (const id of ids) {
       const n = view.byId.get(id);
       if (!n || !onHover(id)) continue;
-      const screenR = radius(n) * Math.sqrt(t.k);
+      const screenR = radius(n) * nodeScale(n) * Math.sqrt(t.k);
       const sx = t.x + t.k * px(n);
       const sy = t.y + t.k * py(n) - screenR - 4;
       if (sx < -80 || sx > width + 80 || sy < -10 || sy > height + 10) continue; // cull off-screen
       const w = ctx.measureText(n.name).width;
       const box = { x1: sx - w / 2, x2: sx + w / 2, y1: sy - FONT_PX, y2: sy };
-      const forced = hovered && id === hovered.id; // hovered label always shows
+      // hovered, selected, and shared labels always show
+      const forced = (hovered && id === hovered.id) || selSet.has(id) || view.shared.has(id);
       if (!forced && overlaps(box)) continue;
       placed.push(box);
       ctx.lineWidth = 3; // white halo keeps text legible over dense nodes/edges
@@ -236,7 +328,8 @@
     const [bx, by] = t.invert([mx, my]);
     let best = null, bestD = Infinity;
     for (const n of view.nodes) {
-      const r = radius(n) / Math.sqrt(t.k) + 3 / t.k;
+      const baseR = radius(n) * nodeScale(n);
+      const r = baseR / Math.sqrt(t.k) + 3 / t.k;
       const ddx = px(n) - bx, ddy = py(n) - by;
       const d2 = ddx * ddx + ddy * ddy;
       if (d2 < r * r && d2 < bestD) { bestD = d2; best = n; }
@@ -279,7 +372,7 @@
       <i style="background:{COLORS.Paper}"></i>PMID</button>
     <button class:off={!show.Author} on:click={() => toggle("Author")} title="Show/hide Author nodes">
       <i style="background:{COLORS.Author}"></i>Author</button>
-    <button class:off={!show.Org} on:click={() => toggle("Org")} title="Show/hide Org nodes">
+    <button class:off={!show.Org} on:click={() => toggle("Org")} title="Show/hide Org nodes (selected orgs stay)">
       <i style="background:{COLORS.Org}"></i>Org</button>
   </div>
 </div>

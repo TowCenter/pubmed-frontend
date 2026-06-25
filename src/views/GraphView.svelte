@@ -86,37 +86,60 @@
       const cy = members.reduce((s, m) => s + (m.y || 0), 0) / members.length;
       const node = { id: g.id, label, name: g.name, x: cx, y: cy, degree: 0, merged: members.length };
       if (label === "Author") {
-        // papers/citations are baked per-name totals; take the max across
-        // variants (they're the same person, so summing would double-count).
-        node.papers = Math.max(0, ...members.map((m) => m.papers || 0));
+        // citations is a baked per-name total; take the max across variants
+        // (same person, so summing would double-count). papers/coiOrgs/coiPapers
+        // are recomputed from the merged, deduped edges below (so shared papers
+        // across variants are counted once).
         node.citations = Math.max(0, ...members.map((m) => m.citations || 0));
+        node.papers = 0;
         node.coiOrgs = 0;
-        node.coiPapers = 0; // both recomputed from the merged edges below
+        node.coiPapers = 0;
       } else if (label === "Paper") {
         node.title = members[0].title;
       }
       out.set(g.id, node);
     }
 
-    // Remap + dedupe links (sum COI weights, drop self-loops from the merge).
+    // Remap + dedupe links (sum COI weights, OR the disclosed flag, drop
+    // self-loops from the merge).
     const lmap = new Map();
     for (const l of linksIn) {
       const s = canon(l.source), t = canon(l.target);
       if (s === t) continue;
       const key = l.rel + "|" + s + "|" + t;
       const ex = lmap.get(key);
-      if (ex) { if (l.rel === "DISCLOSED_COI") ex.weight = (ex.weight || 0) + (l.weight || 0); }
-      else lmap.set(key, { source: s, target: t, rel: l.rel, ...(l.rel === "DISCLOSED_COI" ? { weight: l.weight || 0 } : {}) });
+      if (ex) {
+        if (l.rel === "DISCLOSED_COI") ex.weight = (ex.weight || 0) + (l.weight || 0);
+        if (l.rel === "AUTHORED" && l.coi) ex.coi = true;
+      } else {
+        lmap.set(key, {
+          source: s, target: t, rel: l.rel,
+          ...(l.rel === "DISCLOSED_COI" ? { weight: l.weight || 0 } : {}),
+          ...(l.rel === "AUTHORED" ? { coi: !!l.coi } : {}),
+        });
+      }
     }
     const links = [...lmap.values()];
 
-    // Recompute degree + author COI counts from the merged edges.
+    // Merging changes neighbors' edge counts (deduped variants), so recompute
+    // all edge-derived fields from scratch — reset to 0 first, otherwise the
+    // cloned non-merged nodes would double-count on top of their baked values.
+    for (const n of out.values()) {
+      n.degree = 0;
+      if (n.label === "Author") { n.coiOrgs = 0; n.coiPapers = 0; }
+    }
     for (const l of links) {
       const s = out.get(l.source), t = out.get(l.target);
       if (s) s.degree++;
       if (t) t.degree++;
       if (l.rel === "DISCLOSED_COI" && s && s.label === "Author") s.coiOrgs++;
-      if (l.rel === "AUTHORED" && t && t.label === "Author") t.coiPapers++;
+      if (l.rel === "AUTHORED" && t && t.label === "Author") {
+        // total papers is only recomputed for merged authors (a co-author's
+        // baked DB total can exceed their in-graph papers); coiPapers counts
+        // only papers the author actually disclosed on.
+        if (t.merged) t.papers++;
+        if (l.coi) t.coiPapers++;
+      }
     }
     return { nodes: [...out.values()], links };
   }
@@ -144,10 +167,13 @@
     }
     authorIdByName = aMap; orgIdByName = oMap; paperIdByPmid = pMap;
     authorIdSet = aSet; adjacency = adj;
-    authorsList = nodes.filter((n) => n.label === "Author");
-    authorNames = [...aMap.keys()].sort();
+    // Scatter + pickers default to COI-disclosing authors/papers; the co-authors
+    // and their non-COI papers are surfaced only when you drill into a node.
+    // (n.coi !== false keeps older data, which has no `coi` field, working.)
+    authorsList = nodes.filter((n) => n.label === "Author" && n.coi !== false);
+    authorNames = authorsList.map((n) => n.name).sort();
     orgNames = [...oMap.keys()].sort();
-    pmidList = [...pMap.keys()].sort();
+    pmidList = nodes.filter((n) => n.label === "Paper" && n.coi !== false).map((n) => n.name).sort();
   }
 
   // directly-selected node ids (drives the graph's focus)
@@ -173,7 +199,7 @@
   $: hasFilter = $selAuthors.length || $selOrgs.length || $selPmids.length;
   $: authorCount = authorsList.length;
   $: orgCount = nodes.filter((n) => n.label === "Org").length;
-  $: paperCount = nodes.filter((n) => n.label === "Paper").length;
+  $: paperCount = nodes.filter((n) => n.label === "Paper" && n.coi !== false).length;
 
   function clearAll() { clearSharedFilters(); }
   function addAuthor(name) { $selAuthors = [...new Set([...$selAuthors, name])]; }
