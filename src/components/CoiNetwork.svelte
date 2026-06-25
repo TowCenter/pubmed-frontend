@@ -9,6 +9,7 @@
   export let nodes = [];
   export let links = [];
   export let highlightIds = null; // Set<string> of directly-selected node ids
+  export let hoverId = null;      // node id to highlight from outside (e.g. scatter hover)
 
   const dispatch = createEventDispatcher();
   const COLORS = { Paper: "#5a7a52", Author: "#254c6f", Org: "#DE5A35" };
@@ -43,22 +44,35 @@
   let containerEl, canvas, ctx;
   let width = 800, height = 600, dpr = 1;
   let t = zoomIdentity, zoomBehavior;
-  let hovered = null;
+  let hovered = null;   // node under the cursor
+  let pinned = null;    // node clicked to keep its highlight "stuck"
   let baseScale = 1, cx = 0, cy = 0;
+
+  // The node whose highlight is shown: live hover wins, then a pinned (clicked)
+  // node, then an external hover (e.g. a dot in the author scatter). Each is only
+  // honored if it exists in the current view. Computed at draw time (not a
+  // reactive var) so imperative draw() calls always see fresh values.
+  function activeHoverNode() {
+    if (hovered) return hovered;
+    if (pinned && view.byId.has(pinned.id)) return pinned;
+    if (hoverId != null && view.byId.has(hoverId)) return view.byId.get(hoverId);
+    return null;
+  }
+  // Redraw when the external hover changes.
+  $: if (ctx) { hoverId; draw(); }
 
   // node-type visibility (toggled from the legend)
   let show = { Paper: true, Author: true, Org: true };
   function toggle(label) { show = { ...show, [label]: !show[label] }; }
 
   // Hide low-connection nodes in the overview to clear the periphery of
-  // singletons (the slider only affects the unfiltered overview).
-  let minDegree = 4;
+  // singletons (fixed threshold; nodes with fewer connections aren't shown).
+  const minDegree = 4;
 
   // Directly-selected node ids (from the Author/Org/PMID filters). These stay
   // visible even when their type is hidden via the legend, so e.g. hiding Org
   // leaves only the selected org(s) on screen.
   $: selSet = highlightIds || new Set();
-  $: focusActive = selSet.size > 0;
 
   // Reference show + selSet directly in each reactive block so Svelte re-runs
   // them when either changes (selected nodes survive a hidden type).
@@ -247,9 +261,10 @@
     ctx.translate(t.x, t.y);
     ctx.scale(t.k, t.k);
 
-    const dimByHover = Boolean(hovered);
+    const hov = activeHoverNode();
+    const dimByHover = Boolean(hov);
     const onHover = (id) =>
-      !dimByHover || id === hovered.id || (view.neighbors.get(hovered.id) || new Set()).has(id);
+      !dimByHover || id === hov.id || (view.neighbors.get(hov.id) || new Set()).has(id);
 
     // edges
     ctx.lineWidth = 0.7 / t.k;
@@ -273,13 +288,6 @@
       ctx.beginPath();
       ctx.arc(px(n), py(n), r, 0, 2 * Math.PI);
       ctx.fill();
-      const isSel = selSet.has(n.id);
-      if (isSel || view.shared.has(n.id)) {
-        // ring emphasizes selected (biggest) and shared/relevant nodes
-        ctx.lineWidth = (isSel ? 2.2 : 1.5) / t.k;
-        ctx.strokeStyle = isSel ? "#000" : "#111";
-        ctx.stroke();
-      }
     }
     ctx.globalAlpha = 1;
 
@@ -289,10 +297,10 @@
     // de-overlap so text never piles up: higher-degree nodes (and the hovered
     // one) claim space first, and any label that would collide is skipped.
     // Zooming in spreads nodes apart, so more labels appear as you go deeper.
-    drawLabels(onHover);
+    drawLabels(onHover, hov);
   }
 
-  function drawLabels(onHover) {
+  function drawLabels(onHover, hov) {
     const FONT_PX = 11;
     ctx.save();
     ctx.scale(dpr, dpr);
@@ -306,12 +314,12 @@
     for (const id of selSet) if (view.byId.has(id)) ids.push(id);
     for (const id of view.shared) if (!ids.includes(id)) ids.push(id);
     for (const id of view.labelIds) if (!ids.includes(id)) ids.push(id);
-    if (hovered && !ids.includes(hovered.id)) ids.push(hovered.id);
+    if (hov && !ids.includes(hov.id)) ids.push(hov.id);
 
     // Priority order: hovered, then selected, then shared, then by degree
     // (most-connected win the remaining space).
     const rank = (id) =>
-      (hovered && id === hovered.id ? 4 : 0) + (selSet.has(id) ? 2 : 0) + (view.shared.has(id) ? 1 : 0);
+      (hov && id === hov.id ? 4 : 0) + (selSet.has(id) ? 2 : 0) + (view.shared.has(id) ? 1 : 0);
     ids.sort((a, b) => {
       const dr = rank(b) - rank(a);
       if (dr) return dr;
@@ -335,7 +343,7 @@
       const w = ctx.measureText(n.name).width;
       const box = { x1: sx - w / 2, x2: sx + w / 2, y1: sy - FONT_PX, y2: sy };
       // hovered, selected, and shared labels always show
-      const forced = (hovered && id === hovered.id) || selSet.has(id) || view.shared.has(id);
+      const forced = (hov && id === hov.id) || selSet.has(id) || view.shared.has(id);
       if (!forced && overlaps(box)) continue;
       placed.push(box);
       ctx.lineWidth = 3; // white halo keeps text legible over dense nodes/edges
@@ -359,16 +367,33 @@
     }
     return best;
   }
+  // Report the current highlight (hover, else pinned) so linked views (the
+  // author scatter) can highlight the matching dots. Excludes the external
+  // hoverId so a scatter→network highlight doesn't echo back.
+  function emitHighlight() { dispatch("highlight", hovered || pinned || null); }
+
   function onMove(e) {
     const rect = canvas.getBoundingClientRect();
     const hit = nodeAt(e.clientX - rect.left, e.clientY - rect.top);
-    if (hit !== hovered) { hovered = hit; draw(); }
+    if (hit !== hovered) { hovered = hit; emitHighlight(); draw(); }
     canvas.style.cursor = hit ? "pointer" : "grab";
+  }
+  function onLeave() {
+    if (hovered) { hovered = null; emitHighlight(); draw(); }
   }
   function onClick(e) {
     const rect = canvas.getBoundingClientRect();
     const hit = nodeAt(e.clientX - rect.left, e.clientY - rect.top);
-    if (hit) dispatch("nodeclick", hit);
+    if (!hit) { pinned = null; emitHighlight(); dispatch("focuschange", null); draw(); return; } // click empty space clears the pin
+    // Ctrl/Cmd+click toggles the node in the shared selection (multi-select).
+    if (e.ctrlKey || e.metaKey) { dispatch("nodetoggle", hit); return; }
+    // Plain click "sticks" the highlight (node + its neighbours stay lit so you
+    // can interact with them) and opens the detail card. Clicking it again unpins.
+    pinned = pinned && pinned.id === hit.id ? null : hit;
+    emitHighlight();
+    draw();
+    dispatch("focuschange", pinned); // null when unpinned → card minimizes
+    dispatch("nodeclick", hit);
   }
 
   let ro;
@@ -383,13 +408,7 @@
 </script>
 
 <div class="net" bind:this={containerEl}>
-  <canvas bind:this={canvas} on:pointermove={onMove} on:click={onClick}></canvas>
-  {#if hovered}
-    <div class="tip">
-      <strong>{hovered.label === "Paper" ? "PMID " + hovered.name : hovered.name}</strong>
-      <span>{hovered.label} · {hovered.degree} link{hovered.degree === 1 ? "" : "s"}</span>
-    </div>
-  {/if}
+  <canvas bind:this={canvas} on:pointermove={onMove} on:pointerleave={onLeave} on:click={onClick}></canvas>
   <div class="legend">
     <button class:off={!show.Paper} on:click={() => toggle("Paper")} title="Show/hide PMID nodes">
       <i style="background:{COLORS.Paper}"></i>PMID</button>
@@ -398,24 +417,11 @@
     <button class:off={!show.Org} on:click={() => toggle("Org")} title="Show/hide Org nodes (selected orgs stay)">
       <i style="background:{COLORS.Org}"></i>Org</button>
   </div>
-  {#if !focusActive}
-    <div class="degree-filter" title="Hide nodes with fewer connections than this">
-      <span class="df-lbl">Min connections</span>
-      <input type="range" min="1" max="15" step="1" bind:value={minDegree} />
-      <span class="df-val">{minDegree}</span>
-    </div>
-  {/if}
 </div>
 
 <style>
   .net { position: relative; width: 100%; height: 100%; min-height: 0; background: var(--cjr-white); overflow: hidden; }
   canvas { display: block; }
-  .tip {
-    position: absolute; bottom: 10px; left: 10px;
-    background: var(--cjr-blue); color: #fff; padding: 6px 10px; border-radius: 6px;
-    font-size: 13px; max-width: 70%; pointer-events: none;
-  }
-  .tip span { opacity: 0.75; margin-left: 8px; font-size: 11px; }
   .legend {
     position: absolute; top: 10px; left: 10px; display: flex; gap: 12px;
     background: rgba(255,255,255,0.9); padding: 5px 10px; border-radius: 6px;
@@ -430,12 +436,4 @@
   .legend button.off { opacity: 0.4; text-decoration: line-through; }
   .legend i { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
 
-  .degree-filter {
-    position: absolute; top: 10px; right: 10px; display: flex; align-items: center; gap: 8px;
-    background: rgba(255,255,255,0.9); padding: 5px 10px; border-radius: 6px;
-    border: 1px solid var(--cjr-border); font-size: 12px;
-  }
-  .df-lbl { color: var(--cjr-text-muted); font-size: 11px; }
-  .df-val { font-weight: 600; font-variant-numeric: tabular-nums; min-width: 12px; text-align: right; }
-  .degree-filter input { width: 90px; accent-color: var(--cjr-blue); cursor: pointer; }
 </style>
