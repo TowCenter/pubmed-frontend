@@ -173,19 +173,60 @@
     }
     ctx.globalAlpha = 1;
 
-    // labels: in focus, label authors+orgs; always label hovered
-    ctx.fillStyle = "#222";
-    ctx.font = `${11 / t.k}px system-ui, sans-serif`;
+    ctx.restore();
+
+    // Labels are drawn in screen space (after the zoom transform) with greedy
+    // de-overlap so text never piles up: higher-degree nodes (and the hovered
+    // one) claim space first, and any label that would collide is skipped.
+    // Zooming in spreads nodes apart, so more labels appear as you go deeper.
+    drawLabels(onHover);
+  }
+
+  function drawLabels(onHover) {
+    const FONT_PX = 11;
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    ctx.font = `${FONT_PX}px system-ui, sans-serif`;
     ctx.textAlign = "center";
-    const labelled = new Set();
+    ctx.textBaseline = "alphabetic";
+
+    // Candidates: in focus, every Author/Org; always the hovered node.
+    const ids = [];
     if (view.focus) {
-      for (const n of view.nodes) if (n.label !== "Paper") labelled.add(n.id);
+      for (const n of view.nodes) if (n.label !== "Paper") ids.push(n.id);
     }
-    if (hovered) labelled.add(hovered.id);
-    for (const id of labelled) {
+    if (hovered && !ids.includes(hovered.id)) ids.push(hovered.id);
+
+    // Priority order: hovered first, then by degree (most-connected win space).
+    ids.sort((a, b) => {
+      if (hovered) { if (a === hovered.id) return -1; if (b === hovered.id) return 1; }
+      const na = view.byId.get(a), nb = view.byId.get(b);
+      return (nb?.degree || 0) - (na?.degree || 0);
+    });
+
+    const placed = [];
+    const pad = 2;
+    const overlaps = (b) =>
+      placed.some((p) =>
+        b.x1 < p.x2 + pad && b.x2 > p.x1 - pad && b.y1 < p.y2 + pad && b.y2 > p.y1 - pad);
+
+    for (const id of ids) {
       const n = view.byId.get(id);
       if (!n || !onHover(id)) continue;
-      ctx.fillText(n.name, px(n), py(n) - radius(n) / Math.sqrt(t.k) - 3 / t.k);
+      const screenR = radius(n) * Math.sqrt(t.k);
+      const sx = t.x + t.k * px(n);
+      const sy = t.y + t.k * py(n) - screenR - 4;
+      if (sx < -80 || sx > width + 80 || sy < -10 || sy > height + 10) continue; // cull off-screen
+      const w = ctx.measureText(n.name).width;
+      const box = { x1: sx - w / 2, x2: sx + w / 2, y1: sy - FONT_PX, y2: sy };
+      const forced = hovered && id === hovered.id; // hovered label always shows
+      if (!forced && overlaps(box)) continue;
+      placed.push(box);
+      ctx.lineWidth = 3; // white halo keeps text legible over dense nodes/edges
+      ctx.strokeStyle = "rgba(255,255,255,0.9)";
+      ctx.strokeText(n.name, sx, sy);
+      ctx.fillStyle = "#222";
+      ctx.fillText(n.name, sx, sy);
     }
     ctx.restore();
   }
