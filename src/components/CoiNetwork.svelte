@@ -22,11 +22,22 @@
     return COLORS[n.label] || "#999";
   }
   // Size multiplier: directly-selected nodes are biggest, then nodes shared by
-  // 2+ selections (e.g. co-authored papers), then everything else.
+  // 2+ selections (e.g. co-authored papers), then scaled by degree so the most
+  // connected hubs stand out from the crowd.
   function nodeScale(n) {
     if (selSet.has(n.id)) return 2.6;
     if (view.shared.has(n.id)) return 1.9;
-    return 1;
+    return Math.min(2.2, 1 + Math.sqrt(n.degree || 0) / 8);
+  }
+
+  // Drawn node radius in pre-zoom (px) space; screen radius = this × t.k.
+  // Overview nodes are sized to their layout collision footprint (× baseScale)
+  // so they can NEVER overlap at any zoom — they scale with the view like a map.
+  // Focus nodes keep a roughly constant screen size (few nodes, no crowding).
+  const OVERVIEW_DOT = 0.9; // fraction of the collision footprint to draw (≤~1.05 stays overlap-free)
+  function nodeRadiusLocal(n) {
+    if (view.focus) return (radius(n) * nodeScale(n)) / Math.sqrt(t.k);
+    return (6 + 2.2 * Math.sqrt(n.degree || 0)) * OVERVIEW_DOT * baseScale;
   }
 
   let containerEl, canvas, ctx;
@@ -39,10 +50,15 @@
   let show = { Paper: true, Author: true, Org: true };
   function toggle(label) { show = { ...show, [label]: !show[label] }; }
 
+  // Hide low-connection nodes in the overview to clear the periphery of
+  // singletons (the slider only affects the unfiltered overview).
+  let minDegree = 4;
+
   // Directly-selected node ids (from the Author/Org/PMID filters). These stay
   // visible even when their type is hidden via the legend, so e.g. hiding Org
   // leaves only the selected org(s) on screen.
   $: selSet = highlightIds || new Set();
+  $: focusActive = selSet.size > 0;
 
   // Reference show + selSet directly in each reactive block so Svelte re-runs
   // them when either changes (selected nodes survive a hidden type).
@@ -70,11 +86,16 @@
   // --- the current view: full overview, or a freshly-laid-out focus subgraph ---
   let view = { nodes: [], links: [], byId: new Map(), neighbors: new Map(), focus: false, shared: new Set() };
 
-  $: buildView(highlightIds, fNodes, fLinks);
+  $: buildView(highlightIds, fNodes, fLinks, minDegree);
 
-  function buildView(hi, allNodes, allLinks) {
+  // Highest-degree node ids — overview labels these (de-overlap trims to fit).
+  function topByDegree(nodesArr, k) {
+    return [...nodesArr].sort((a, b) => (b.degree || 0) - (a.degree || 0)).slice(0, k).map((n) => n.id);
+  }
+
+  function buildView(hi, allNodes, allLinks, minDeg) {
     if (!allNodes.length) {
-      view = { nodes: [], links: [], byId: new Map(), neighbors: new Map(), focus: false, shared: new Set() };
+      view = { nodes: [], links: [], byId: new Map(), neighbors: new Map(), focus: false, shared: new Set(), labelIds: [] };
       draw();
       return;
     }
@@ -85,11 +106,15 @@
     if (!focus) {
       // Overview = the COI network only (authors/papers that carry a disclosure,
       // plus orgs). The full set of papers and co-authors is large, so it's only
-      // revealed when you select a node (the focus branch below).
-      const ov = allNodes.filter((n) => n.coi !== false);
+      // revealed when you select a node (the focus branch below). Low-degree
+      // nodes are dropped to clear the periphery of singletons.
+      const ov = allNodes.filter((n) => n.coi !== false && (n.degree || 0) >= minDeg);
       const ovById = new Map(ov.map((n) => [n.id, n]));
       const ovLinks = allLinks.filter((l) => ovById.has(l.source) && ovById.has(l.target));
-      view = { nodes: ov, links: ovLinks, byId: ovById, neighbors: buildNeighbors(ovLinks), focus: false, shared: new Set() };
+      view = {
+        nodes: ov, links: ovLinks, byId: ovById, neighbors: buildNeighbors(ovLinks),
+        focus: false, shared: new Set(), labelIds: topByDegree(ov, 200),
+      };
       frameAndDraw();
       return;
     }
@@ -169,7 +194,10 @@
     const ticks = sub.length > 600 ? 120 : 300;
     for (let i = 0; i < ticks; i++) sim.tick();
 
-    view = { nodes: sub, links: subLinks, byId, neighbors, focus: true, shared };
+    view = {
+      nodes: sub, links: subLinks, byId, neighbors, focus: true, shared,
+      labelIds: sub.filter((n) => n.label !== "Paper").map((n) => n.id),
+    };
     frameAndDraw();
   }
 
@@ -241,14 +269,13 @@
     for (const n of view.nodes) {
       ctx.globalAlpha = onHover(n.id) ? 1 : 0.1;
       ctx.fillStyle = nodeColor(n);
-      const scale = nodeScale(n);
-      const r = (radius(n) * scale) / Math.sqrt(t.k);
+      const r = nodeRadiusLocal(n);
       ctx.beginPath();
       ctx.arc(px(n), py(n), r, 0, 2 * Math.PI);
       ctx.fill();
-      if (scale > 1) {
-        // ring emphasizes selected (biggest) and shared nodes
-        const isSel = selSet.has(n.id);
+      const isSel = selSet.has(n.id);
+      if (isSel || view.shared.has(n.id)) {
+        // ring emphasizes selected (biggest) and shared/relevant nodes
         ctx.lineWidth = (isSel ? 2.2 : 1.5) / t.k;
         ctx.strokeStyle = isSel ? "#000" : "#111";
         ctx.stroke();
@@ -273,15 +300,12 @@
     ctx.textAlign = "center";
     ctx.textBaseline = "alphabetic";
 
-    // Candidates: selected + shared nodes (always), every Author/Org in focus,
-    // plus hovered.
+    // Candidates: selected + shared (always), then the per-view label set
+    // (authors/orgs in focus; top hubs by degree in the overview), plus hovered.
     const ids = [];
     for (const id of selSet) if (view.byId.has(id)) ids.push(id);
     for (const id of view.shared) if (!ids.includes(id)) ids.push(id);
-    if (view.focus) {
-      for (const n of view.nodes)
-        if (n.label !== "Paper" && !ids.includes(n.id)) ids.push(n.id);
-    }
+    for (const id of view.labelIds) if (!ids.includes(id)) ids.push(id);
     if (hovered && !ids.includes(hovered.id)) ids.push(hovered.id);
 
     // Priority order: hovered, then selected, then shared, then by degree
@@ -304,7 +328,7 @@
     for (const id of ids) {
       const n = view.byId.get(id);
       if (!n || !onHover(id)) continue;
-      const screenR = radius(n) * nodeScale(n) * Math.sqrt(t.k);
+      const screenR = nodeRadiusLocal(n) * t.k;
       const sx = t.x + t.k * px(n);
       const sy = t.y + t.k * py(n) - screenR - 4;
       if (sx < -80 || sx > width + 80 || sy < -10 || sy > height + 10) continue; // cull off-screen
@@ -328,8 +352,7 @@
     const [bx, by] = t.invert([mx, my]);
     let best = null, bestD = Infinity;
     for (const n of view.nodes) {
-      const baseR = radius(n) * nodeScale(n);
-      const r = baseR / Math.sqrt(t.k) + 3 / t.k;
+      const r = nodeRadiusLocal(n) + 3 / t.k;
       const ddx = px(n) - bx, ddy = py(n) - by;
       const d2 = ddx * ddx + ddy * ddy;
       if (d2 < r * r && d2 < bestD) { bestD = d2; best = n; }
@@ -375,6 +398,13 @@
     <button class:off={!show.Org} on:click={() => toggle("Org")} title="Show/hide Org nodes (selected orgs stay)">
       <i style="background:{COLORS.Org}"></i>Org</button>
   </div>
+  {#if !focusActive}
+    <div class="degree-filter" title="Hide nodes with fewer connections than this">
+      <span class="df-lbl">Min connections</span>
+      <input type="range" min="1" max="15" step="1" bind:value={minDegree} />
+      <span class="df-val">{minDegree}</span>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -399,4 +429,13 @@
   .legend button:hover { background: var(--cjr-bg); }
   .legend button.off { opacity: 0.4; text-decoration: line-through; }
   .legend i { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+
+  .degree-filter {
+    position: absolute; top: 10px; right: 10px; display: flex; align-items: center; gap: 8px;
+    background: rgba(255,255,255,0.9); padding: 5px 10px; border-radius: 6px;
+    border: 1px solid var(--cjr-border); font-size: 12px;
+  }
+  .df-lbl { color: var(--cjr-text-muted); font-size: 11px; }
+  .df-val { font-weight: 600; font-variant-numeric: tabular-nums; min-width: 12px; text-align: right; }
+  .degree-filter input { width: 90px; accent-color: var(--cjr-blue); cursor: pointer; }
 </style>
