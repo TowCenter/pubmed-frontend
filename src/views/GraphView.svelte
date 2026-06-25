@@ -19,6 +19,8 @@
   let loading = true;
   let error = "";
   let selected = null;
+  let scatterHoverId = null; // author id hovered in the scatter → highlighted in the network
+  let netHoverNode = null;   // node hovered/pinned in the network → dots lit in the scatter
 
   // --- node merging: combine variants (e.g. the 14 JUUL spellings) into one ---
   // mergeGroups is the shared store: [{ id, name, label, members, memberNames }]
@@ -196,6 +198,17 @@
     return s;
   })();
 
+  // Author dots to spotlight in the scatter for the node hovered/pinned in the
+  // network: the author itself, or the author-neighbours of an org/paper node.
+  $: scatterHoverIds = (() => {
+    const n = netHoverNode;
+    if (!n) return null;
+    if (n.label === "Author") return new Set([n.id]);
+    const s = new Set();
+    for (const nb of adjacency.get(n.id) || []) if (authorIdSet.has(nb)) s.add(nb);
+    return s;
+  })();
+
   $: hasFilter = $selAuthors.length || $selOrgs.length || $selPmids.length;
   $: authorCount = authorsList.length;
   $: orgCount = nodes.filter((n) => n.label === "Org").length;
@@ -207,6 +220,17 @@
     if (n.label === "Author") addAuthor(n.name);
     else if (n.label === "Org") $selOrgs = [...new Set([...$selOrgs, n.name])];
     else if (n.label === "Paper") $selPmids = [...new Set([...$selPmids, n.name])];
+  }
+
+  // Ctrl/Cmd+click multi-select: toggle a name in/out of the matching store.
+  function toggleIn(store, val) {
+    store.update((arr) => (arr.includes(val) ? arr.filter((x) => x !== val) : [...arr, val]));
+  }
+  function toggleNode(n) {
+    if (n.label === "Author") toggleIn(selAuthors, n.name);
+    else if (n.label === "Org") toggleIn(selOrgs, n.name);
+    else if (n.label === "Paper") toggleIn(selPmids, n.name);
+    selected = n;
   }
 
   // --- combine actions --------------------------------------------------------
@@ -333,7 +357,10 @@
         <div class="pane">
           <div class="pane-title">Relationships {hasFilter ? "" : "(overview)"}</div>
           <div class="pane-body">
-            <CoiNetwork {nodes} {links} {highlightIds} on:nodeclick={(e) => (selected = e.detail)} />
+            <CoiNetwork {nodes} {links} {highlightIds} hoverId={scatterHoverId}
+              on:nodetoggle={(e) => toggleNode(e.detail)}
+              on:highlight={(e) => (netHoverNode = e.detail)}
+              on:focuschange={(e) => (selected = e.detail)} />
           </div>
         </div>
         <div class="pane">
@@ -344,8 +371,10 @@
             </select>
           </div>
           <div class="pane-body">
-            <AuthorScatter authors={authorsList} highlightIds={activeAuthorIds} {yKey} {yLabel}
-              on:authorclick={(e) => { selected = e.detail; addAuthor(e.detail.name); }} />
+            <AuthorScatter authors={authorsList} highlightIds={activeAuthorIds} hoverIds={scatterHoverIds} {yKey} {yLabel}
+              on:authorclick={(e) => (selected = e.detail)}
+              on:authortoggle={(e) => toggleNode(e.detail)}
+              on:authorhover={(e) => (scatterHoverId = e.detail ? e.detail.id : null)} />
           </div>
         </div>
       </div>
@@ -477,20 +506,24 @@
   }
   .msg.error { color: var(--cjr-accent); }
 
+  /* Compact, translucent card pinned to the bottom-left over the (larger)
+     network pane, so it stays out of the author-impact scatter on the right. */
   .detail {
-    position: absolute; top: 12px; right: 12px; width: 250px; z-index: 5;
-    background: var(--cjr-white); border: 1px solid var(--cjr-border);
-    border-radius: 8px; padding: 14px 16px; box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    position: absolute; bottom: 12px; left: 12px; width: 210px; z-index: 5;
+    background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(4px);
+    border: 1px solid var(--cjr-border); border-radius: 8px;
+    padding: 10px 12px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    max-height: 70%; overflow: auto; font-size: 12px;
   }
   .detail .x {
-    position: absolute; top: 6px; right: 8px; border: none; background: none;
-    font-size: 20px; cursor: pointer; color: var(--cjr-text-muted);
+    position: absolute; top: 4px; right: 6px; border: none; background: none;
+    font-size: 18px; cursor: pointer; color: var(--cjr-text-muted); line-height: 1;
   }
-  .d-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--cjr-accent); font-weight: 600; }
-  .detail h3 { font-family: var(--font-heading); font-size: 17px; color: var(--cjr-blue); margin: 2px 0 8px; word-break: break-word; }
-  .detail .title { font-size: 12px; color: var(--cjr-text); margin-bottom: 8px; line-height: 1.35; }
-  dl { font-size: 13px; margin-bottom: 12px; }
-  dt { color: var(--cjr-text-muted); margin-top: 6px; font-size: 11px; text-transform: uppercase; }
+  .d-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--cjr-accent); font-weight: 600; }
+  .detail h3 { font-family: var(--font-heading); font-size: 14px; color: var(--cjr-blue); margin: 2px 0 6px; word-break: break-word; }
+  .detail .title { font-size: 11.5px; color: var(--cjr-text); margin-bottom: 6px; line-height: 1.3; }
+  dl { font-size: 12px; margin-bottom: 8px; }
+  dt { color: var(--cjr-text-muted); margin-top: 5px; font-size: 10px; text-transform: uppercase; }
   .detail-actions { display: flex; flex-direction: column; gap: 6px; }
   .filter-btn {
     width: 100%; background: var(--cjr-blue); color: #fff; border: none;

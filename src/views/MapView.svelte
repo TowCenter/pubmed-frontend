@@ -914,16 +914,15 @@
         </label>
       </section>
 
-      <section class="filter-section filter-section-selection">
-        <span class="filter-label">Selection {#if selectedPointIds.size > 0}<span class="filter-pill">{selectedPointIds.size}</span>{/if}</span>
-        <p class="filter-hint">Shift+drag or Shift+click on the map.</p>
-        {#if selectedPointIds.size > 0}
+      {#if selectedPointIds.size > 0}
+        <section class="filter-section filter-section-selection">
+          <span class="filter-label">Selection <span class="filter-pill">{selectedPointIds.size}</span></span>
           <div class="filter-btn-group">
             <button type="button" class="filter-btn filter-btn-primary" on:click={exportPmids}>Export PMIDs</button>
             <button type="button" class="filter-btn filter-btn-ghost" on:click={clearPointSelection}>Clear</button>
           </div>
-        {/if}
-      </section>
+        </section>
+      {/if}
 
       <footer class="filter-panel-footer">
         <button type="button" class="reset-btn" on:click={resetFilters}>Reset all</button>

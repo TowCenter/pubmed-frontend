@@ -6,7 +6,8 @@
   import { scaleLinear } from "d3-scale";
 
   export let authors = [];           // [{id,name,papers,coiOrgs,coiPapers,citations}]
-  export let highlightIds = null;    // Set<string> of author ids to emphasize
+  export let highlightIds = null;    // Set<string> of author ids to emphasize (selection)
+  export let hoverIds = null;        // Set<string> of author ids to spotlight (linked hover)
   export let yKey = "coiOrgs";       // which metric on the y-axis
   export let yLabel = "# COI organizations";
 
@@ -26,7 +27,7 @@
   $: y = scaleLinear().domain([0, yMax * 1.05]).range([height - M.bottom, M.top]);
   $: hi = highlightIds && highlightIds.size ? highlightIds : null;
   // redraw on any input change
-  $: { yKey; yLabel; highlightIds; authors; if (ctx) draw(); }
+  $: { yKey; yLabel; highlightIds; hoverIds; authors; if (ctx) draw(); }
 
   function resize() {
     if (!containerEl || !canvas) return;
@@ -100,6 +101,28 @@
     for (const a of labelled) {
       ctx.fillText(a.name, x(xVal(a)) + 7, y(yVal(a)) + 3);
     }
+
+    // Linked hover: spotlight dots for the node hovered/pinned in the network.
+    const hov = hoverIds && hoverIds.size ? hoverIds : null;
+    if (hov) {
+      ctx.globalAlpha = 1;
+      const spot = authors.filter((a) => hov.has(a.id));
+      for (const a of spot) {
+        ctx.beginPath();
+        ctx.arc(x(xVal(a)), y(yVal(a)), 6, 0, 2 * Math.PI);
+        ctx.fillStyle = "#DE5A35";
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "#111";
+        ctx.stroke();
+      }
+      if (spot.length <= 25) {
+        ctx.fillStyle = "#222";
+        ctx.font = "11px system-ui, sans-serif";
+        ctx.textAlign = "left";
+        for (const a of spot) ctx.fillText(a.name, x(xVal(a)) + 7, y(yVal(a)) + 3);
+      }
+    }
     ctx.restore();
   }
 
@@ -115,13 +138,20 @@
   function onMove(e) {
     const r = canvas.getBoundingClientRect();
     const hit = dotAt(e.clientX - r.left, e.clientY - r.top);
-    if (hit !== hovered) { hovered = hit; draw(); }
+    if (hit !== hovered) { hovered = hit; dispatch("authorhover", hit); draw(); }
     canvas.style.cursor = hit ? "pointer" : "default";
+  }
+  function onLeave() {
+    if (hovered) { hovered = null; dispatch("authorhover", null); draw(); }
   }
   function onClick(e) {
     const r = canvas.getBoundingClientRect();
     const hit = dotAt(e.clientX - r.left, e.clientY - r.top);
-    if (hit) dispatch("authorclick", hit);
+    if (!hit) return;
+    // Ctrl/Cmd+click toggles the author in the selection (multi-select);
+    // a plain click just opens their detail card.
+    if (e.ctrlKey || e.metaKey) dispatch("authortoggle", hit);
+    else dispatch("authorclick", hit);
   }
 
   let ro;
@@ -134,7 +164,7 @@
 </script>
 
 <div class="scatter" bind:this={containerEl}>
-  <canvas bind:this={canvas} on:pointermove={onMove} on:click={onClick}></canvas>
+  <canvas bind:this={canvas} on:pointermove={onMove} on:pointerleave={onLeave} on:click={onClick}></canvas>
   {#if hovered}
     <div class="tip">
       <strong>{hovered.name}</strong>
