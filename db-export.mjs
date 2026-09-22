@@ -16,7 +16,10 @@ import Papa from 'papaparse';
 
 // Reconstruct the flat, denormalised shape from the relational schema.
 // x/y live in article_embedding; authors/keywords/citations are join tables.
-const SQL = `
+// buildSql() below appends a WHERE clause restricting to one collection's
+// articles when a collection is requested — the query otherwise looks
+// identical.
+const SQL_BASE = `
   SELECT
     a.pmid,
     a.title,
@@ -63,10 +66,29 @@ const SQL = `
     -- Funding institutions / agencies
     (SELECT string_agg(DISTINCT i.name, '; ')
        FROM article_funding fu JOIN institution i ON i.institution_id = fu.institution_id
-       WHERE fu.article_id = a.article_id) AS funding
+       WHERE fu.article_id = a.article_id) AS funding,
+    -- Collection(s) this article belongs to (e.g. "E-Cigs", "Creatine"). An
+    -- article can be in more than one, so ';'-separated like the other
+    -- selectable-category columns (coi_org, affiliations, funding).
+    (SELECT string_agg(DISTINCT col.name, '; ' ORDER BY col.name)
+       FROM article_collection ac JOIN collection col ON col.collection_id = ac.collection_id
+       WHERE ac.article_id = a.article_id) AS collections
   FROM article a
   JOIN article_embedding e ON e.article_id = a.article_id
 `;
+
+/** SQL_BASE, restricted to one collection's articles when `collection` is given. */
+function buildSql(collection) {
+  if (!collection) return { sql: SQL_BASE, params: [] };
+  return {
+    sql: `${SQL_BASE}
+      WHERE EXISTS (
+        SELECT 1 FROM article_collection ac JOIN collection col ON col.collection_id = ac.collection_id
+        WHERE ac.article_id = a.article_id AND col.name = $1
+      )`,
+    params: [collection],
+  };
+}
 
 const MONTHS = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
@@ -90,8 +112,8 @@ function isoDate(year, month, day) {
   return `${String(y).padStart(4, '0')}-${String(mo).padStart(2, '0')}-${String(da).padStart(2, '0')}`;
 }
 
-/** Query Postgres and return a CSV string with the columns the app expects. */
-export async function buildCsv() {
+/** Open a pool for one query, run `fn(pool)`, and always close it after. */
+async function withPool(fn) {
   const { default: pg } = await import('pg');
   const caPath = process.env.DB_SSL_CA || 'global-bundle.pem';
   const ca = fs.readFileSync(path.resolve(caPath), 'utf8');
@@ -104,9 +126,34 @@ export async function buildCsv() {
     password: process.env.DB_PASSWORD,
     ssl: { ca, rejectUnauthorized: true }, // verify cert against RDS CA bundle
   });
-
   try {
-    const { rows } = await pool.query(SQL);
+    return await fn(pool);
+  } finally {
+    await pool.end();
+  }
+}
+
+/** Names of every collection that has at least one article, e.g. ["Creatine", "E-Cigs"]. */
+export async function listCollections() {
+  return withPool(async (pool) => {
+    const { rows } = await pool.query(`
+      SELECT col.name FROM collection col
+      WHERE EXISTS (SELECT 1 FROM article_collection ac WHERE ac.collection_id = col.collection_id)
+      ORDER BY col.name
+    `);
+    return rows.map((r) => r.name);
+  });
+}
+
+/**
+ * Query Postgres and return a CSV string with the columns the app expects.
+ * Pass `{ collection: "Creatine" }` to restrict to just that collection's
+ * articles; omit it for the full (unscoped) set.
+ */
+export async function buildCsv({ collection } = {}) {
+  const { sql, params } = buildSql(collection);
+  return withPool(async (pool) => {
+    const { rows } = await pool.query(sql, params);
     const out = rows.map((r) => ({
       pmid: r.pmid,
       title: r.title,
@@ -119,6 +166,7 @@ export async function buildCsv() {
       coi_org: r.coi_org,
       affiliations: r.affiliations,
       funding: r.funding,
+      collections: r.collections,
       cited_by_pmids: r.cited_by_pmids,
       url: r.pubmed_url,
       date: isoDate(r.publication_year, r.publication_month, r.publication_day),
@@ -126,7 +174,5 @@ export async function buildCsv() {
       y: r.y,
     }));
     return Papa.unparse(out); // handles quoting/escaping
-  } finally {
-    await pool.end();
-  }
+  });
 }

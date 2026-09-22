@@ -44,19 +44,9 @@
   let didBoxSelectThisGesture = false;
 
   $: highlightedSet = new Set(highlightedData.map((d) => d.id));
-  $: uniqueDomainCount = new Set(data.map((d) => d[domainColumn])).size;
 
   let zoomBehavior;
   let canvasSel;
-
-  function matchesSearchQuery(text, query) {
-    if (!query || !text) return false;
-    try {
-      return new RegExp(query, "i").test(text);
-    } catch {
-      return String(text).toLowerCase().includes(String(query).toLowerCase());
-    }
-  }
 
   function getMouseWorld(event) {
     if (!canvas) return [0, 0];
@@ -68,19 +58,12 @@
     return t.invert([mouseX, mouseY]);
   }
 
-    /** Use isActive from parent (filteredData) so array columns and OR/AND logic match. */
+    // MapView's filteredData always sets isActive (it's the single source of
+    // truth for date/highlight-by-value/search/linked-filter matching), so
+    // this is just a passthrough — kept as a named function since the canvas
+    // draw loop calls it in a few places.
     function isPointActive(d) {
-      if (d && typeof d.isActive === 'boolean') return d.isActive;
-      const hasSearch = !!(searchQuery && String(searchQuery).trim().length);
-      const inSearch = hasSearch
-        ? (matchesSearchQuery(d.title ?? '', searchQuery) || matchesSearchQuery(d.text ?? '', searchQuery))
-        : true;
-      const hasSelection = selectedValues && selectedValues.size > 0 && selectedValues.size < uniqueDomainCount;
-      const inSelection = hasSelection ? selectedValues.has(d[domainColumn]) : true;
-      const inDateRange = (startDate && endDate)
-        ? (!!d.date && d.date >= startDate && d.date <= endDate)
-        : true;
-      return inSearch && inSelection && inDateRange;
+      return d.isActive;
     }
 
 

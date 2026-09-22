@@ -35,4 +35,8 @@ lancedb
 # export-data). Source of truth is the DB, so these are never committed.
 public/data.csv
 public/data-with-xy.csv
+public/data-with-xy-*.csv
+public/collections.json
 public/coi-graph.json
+public/coi-graph-core.json
+public/coi-graph-extended.json

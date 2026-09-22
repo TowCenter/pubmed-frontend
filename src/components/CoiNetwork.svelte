@@ -10,6 +10,7 @@
   export let links = [];
   export let highlightIds = null; // Set<string> of directly-selected node ids
   export let hoverId = null;      // node id to highlight from outside (e.g. scatter hover)
+  export let expandDepth = 1;     // how many hops out to reveal around a single selected node
 
   const dispatch = createEventDispatcher();
   const COLORS = { Paper: "#5a7a52", Author: "#254c6f", Org: "#DE5A35" };
@@ -100,14 +101,14 @@
   // --- the current view: full overview, or a freshly-laid-out focus subgraph ---
   let view = { nodes: [], links: [], byId: new Map(), neighbors: new Map(), focus: false, shared: new Set() };
 
-  $: buildView(highlightIds, fNodes, fLinks, minDegree);
+  $: buildView(highlightIds, fNodes, fLinks, minDegree, expandDepth);
 
   // Highest-degree node ids — overview labels these (de-overlap trims to fit).
   function topByDegree(nodesArr, k) {
     return [...nodesArr].sort((a, b) => (b.degree || 0) - (a.degree || 0)).slice(0, k).map((n) => n.id);
   }
 
-  function buildView(hi, allNodes, allLinks, minDeg) {
+  function buildView(hi, allNodes, allLinks, minDeg, depth) {
     if (!allNodes.length) {
       view = { nodes: [], links: [], byId: new Map(), neighbors: new Map(), focus: false, shared: new Set(), labelIds: [] };
       draw();
@@ -118,11 +119,13 @@
     const focus = hi && hi.size > 0;
 
     if (!focus) {
-      // Overview = the COI network only (authors/papers that carry a disclosure,
-      // plus orgs). The full set of papers and co-authors is large, so it's only
-      // revealed when you select a node (the focus branch below). Low-degree
-      // nodes are dropped to clear the periphery of singletons.
-      const ov = allNodes.filter((n) => n.coi !== false && (n.degree || 0) >= minDeg);
+      // Overview = the entire universe (every paper/author/org currently in
+      // scope, not just the ones with a COI disclosure — nodeColor() still
+      // shades non-disclosing Paper/Author nodes lighter so the COI signal
+      // stays visible). Low-degree nodes are dropped to clear the periphery of
+      // singletons; that full picture (including singletons) is only revealed
+      // when you select a node (the focus branch below).
+      const ov = allNodes.filter((n) => (n.degree || 0) >= minDeg);
       const ovById = new Map(ov.map((n) => [n.id, n]));
       const ovLinks = allLinks.filter((l) => ovById.has(l.source) && ovById.has(l.target));
       view = {
@@ -180,9 +183,20 @@
       // Emphasize the relevant authors (the answer to the cross-filter query).
       shared = new Set([...relevant].filter((id) => !hi.has(id)));
     } else {
-      // Single selection: that node + its direct (1-hop) neighbors.
-      for (const id of selected) {
-        for (const nb of neighborsAll.get(id) || []) visible.add(nb);
+      // Single selection: that node + everything within `depth` hops of it
+      // (breadth-first). depth=1 is the original direct-neighbor view; higher
+      // depths reveal the wider neighborhood a step at a time.
+      const hops = Math.max(1, depth || 1);
+      let frontier = new Set(selected);
+      for (let d = 0; d < hops; d++) {
+        const next = new Set();
+        for (const id of frontier) {
+          for (const nb of neighborsAll.get(id) || []) {
+            if (!visible.has(nb)) { visible.add(nb); next.add(nb); }
+          }
+        }
+        if (!next.size) break;
+        frontier = next;
       }
     }
 

@@ -7,55 +7,18 @@
   import MultiSelect from "../components/MultiSelect.svelte";
   // Author/Org/PMID selection shared with the COI network view. Picking any of
   // these highlights the matching articles here and focuses the same nodes there.
-  import { selAuthors, selOrgs, selPmids, clearSharedFilters } from "../stores/sharedFilters.js";
+  import { selAuthors, selOrgs, selPmids, clearSharedFilters, mapActivePmids } from "../stores/sharedFilters.js";
   // Variant → canonical name maps from nodes combined in the COI network view.
   import { authorCanonical, orgCanonical } from "../stores/merges.js";
+  // Which collection (e.g. "E-Cigs", "Creatine") the app is scoped to — shared
+  // with the COI network view so switching it re-scopes both.
+  import { selectedCollection, ALL_COLLECTIONS } from "../stores/collectionFilter.js";
   import { schemeTableau10 } from "d3-scale-chromatic";
+  import { resolveDataUrl } from "../lib/dataUrl.js";
+  import { parseColumnValueToItems, rowValuesForColumn, parseCitedByPmids } from "../lib/columnValues.js";
+  import { parseSearchQuery, evalSearchQuery, searchHaystack } from "../lib/searchQuery.js";
 
-  // Resolve data URL from query params (url | filename [+ bucket]) or env fallback
   let resolvedDataUrl = "";
-  function resolveDataUrl() {
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const directUrl = params.get("url");
-      const filename = params.get("filename");
-      const bucket = params.get("bucket");
-
-      // Highest priority: full URL provided
-      if (directUrl && /^https?:\/\//i.test(directUrl)) return directUrl;
-
-      // Build from filename and (optional) bucket
-      if (filename) {
-        // Determine base from bucket param or env
-        let base = "";
-        if (bucket) {
-          if (/^https?:\/\//i.test(bucket)) {
-            base = bucket;
-          } else if (bucket.includes(".")) {
-            // Looks like a host (e.g. my-bucket.s3.amazonaws.com or custom domain)
-            base = `https://${bucket}`;
-          } else {
-            // Treat as bare S3 bucket name
-            base = `https://${bucket}.s3.amazonaws.com`;
-          }
-        } else {
-          // Env-configured default base (e.g. https://my-bucket.s3.amazonaws.com/)
-          base =
-            import.meta.env.VITE_S3_BASE_URL ||
-            import.meta.env.VITE_DATA_BASE_URL ||
-            "https://pink-slime-public.s3.amazonaws.com/";
-        }
-        if (base && !base.endsWith("/")) base += "/";
-        return base ? base + filename : filename;
-      }
-
-      // Fallbacks: explicit env or local file in /public (use root path so it works with base path)
-      return import.meta.env.VITE_DATA_URL || (import.meta.env.BASE_URL || "/") + "data-with-xy.csv";
-    } catch (e) {
-      console.warn("Failed to resolve data URL from query params:", e);
-      return import.meta.env.VITE_DATA_URL || (import.meta.env.BASE_URL || "/") + "data-with-xy.csv";
-    }
-  }
 
   let data = [],
     columns = [],
@@ -77,6 +40,17 @@
 
   let searchQuery = "";
   let highlightSearchQuery = "";
+  // Which fields the search box's boolean query runs against. "keywords" covers
+  // both author keywords and MeSH-style indexed terms — the DB keeps them in one
+  // combined column, there's no separate MeSH field to split out.
+  const SEARCH_FIELD_DEFS = [
+    { key: "title", label: "Title", get: (d) => d.title },
+    { key: "abstract", label: "Abstract", get: (d) => d.abstract ?? d.text },
+    { key: "keywords", label: "Keywords / MeSH", get: (d) => d.keywords },
+  ];
+  let searchFields = new Set(SEARCH_FIELD_DEFS.map((f) => f.key));
+  /** "filter" = remove non-matching rows entirely; "highlight" = dim them, like the other filters below. */
+  let searchMode = "highlight";
 
   let hoveredData = null;
   let selectedData = null; // Pinned/clicked data
@@ -135,6 +109,8 @@
     // the clean, selectable organizations instead.
     "x", "y", "date", "id", "embedding", "n_tokens", "abstract", "text", "coi",
     "impact", "cited_by_pmids", "url",
+    // Has its own dedicated collection toggle in the top bar instead.
+    "collections",
   ]);
 
   // Friendlier labels for the "Highlight by column" dropdown (falls back to the
@@ -177,10 +153,30 @@
     }
   }
 
+  // --- collection scoping -----------------------------------------------------
+  // Restrict to the selected collection (e.g. "E-Cigs") before anything else
+  // derives from the data, so "Color by column", the Author/Org/PMID pickers,
+  // top-authors, and the plot itself all scope to just that collection.
+  $: scopedData = !data.length || $selectedCollection === ALL_COLLECTIONS
+    ? data
+    : data.filter((d) => parseColumnValueToItems(d.collections).includes($selectedCollection));
+
+  // Search can either filter (remove non-matching rows, like the collection
+  // scope above — narrowing the plot, pickers, and top-authors too) or just
+  // highlight (dim non-matching rows in place, like "Highlight by value" and
+  // the date range do). Parsed once per query/field-selection change, not per row.
+  $: hasSearch = searchQuery && searchQuery.trim().length > 0 && searchFields.size > 0;
+  $: searchAst = hasSearch ? parseSearchQuery(searchQuery) : null;
+  $: searchFilterActive = hasSearch && searchMode === "filter";
+  $: searchHighlightActive = hasSearch && searchMode === "highlight";
+  $: searchFilteredData = searchFilterActive
+    ? scopedData.filter((d) => evalSearchQuery(searchAst, searchHaystack(d, searchFields, SEARCH_FIELD_DEFS)))
+    : scopedData;
+
   // Keep highlight values in sync with Color by column (so reset and column change always show correct list)
-  $: if (domainColumn && data && data.length) {
+  $: if (domainColumn && searchFilteredData && searchFilteredData.length) {
     uniqueValues = [
-      ...new Set(data.flatMap((d) => parseColumnValueToItems(d[domainColumn]))),
+      ...new Set(searchFilteredData.flatMap((d) => parseColumnValueToItems(d[domainColumn]))),
     ].sort((a, b) => String(a).localeCompare(String(b)));
   } else {
     uniqueValues = [];
@@ -194,13 +190,13 @@
   $: canonAuthor = (name) => $authorCanonical.get(name) || name;
   $: canonOrg = (name) => $orgCanonical.get(name) || name;
 
-  $: linkedOrgOptions = data.length
-    ? [...new Set(data.flatMap((d) => parseColumnValueToItems(d.coi_org)).map(canonOrg))].sort(
+  $: linkedOrgOptions = searchFilteredData.length
+    ? [...new Set(searchFilteredData.flatMap((d) => parseColumnValueToItems(d.coi_org)).map(canonOrg))].sort(
         (a, b) => String(a).localeCompare(String(b)),
       )
     : [];
-  $: linkedPmidOptions = data.length
-    ? data.map((d) => String(d.pmid ?? d.PMID ?? "").trim()).filter(Boolean).sort()
+  $: linkedPmidOptions = searchFilteredData.length
+    ? searchFilteredData.map((d) => String(d.pmid ?? d.PMID ?? "").trim()).filter(Boolean).sort()
     : [];
 
   $: selAuthorsSet = new Set($selAuthors);
@@ -226,10 +222,10 @@
   // --- top authors by paper count (respects merges) --------------------------
   // One paper counts once per (canonical) author, even if a variant appears
   // twice in its author list.
-  $: topAuthors = data.length
+  $: topAuthors = searchFilteredData.length
     ? (() => {
         const counts = new Map();
-        for (const d of data) {
+        for (const d of searchFilteredData) {
           const seen = new Set();
           for (const raw of parseColumnValueToItems(d.authors)) {
             const a = canonAuthor(raw);
@@ -279,8 +275,9 @@
       loadTotal = 0;
       loadProgress = 0;
 
-      // Determine the final data URL once on mount
-      resolvedDataUrl = resolveDataUrl();
+      // Determine the final data URL once on mount — always scoped to the
+      // collection the app gate already required the user to pick.
+      resolvedDataUrl = resolveDataUrl(window.location.search, import.meta.env, $selectedCollection);
       const isZipFile = resolvedDataUrl.toLowerCase().endsWith('.zip');
 
       const response = await fetch(resolvedDataUrl, {
@@ -370,10 +367,9 @@
     // Determine if any filter is active
     const hasSelection =
       selectedValues.size > 0 && selectedValues.size < uniqueValues.length;
-    const hasSearch = searchQuery && searchQuery.trim().length > 0;
-    anyFilterActive = !fullDateRange || hasSelection || hasSearch || hasLinkedFilter;
+    anyFilterActive = !fullDateRange || hasSelection || hasLinkedFilter || searchHighlightActive;
 
-    filteredData = data.map((d) => {
+    filteredData = searchFilteredData.map((d) => {
       // Undated articles (date === null) can't be placed on the timeline, so
       // they only pass while the slider spans the full range.
       const inDateRange = !d.date
@@ -390,21 +386,11 @@
           inSelection = [...selectedValues].every((v) => rowValues.includes(v));
         }
       }
-      let inSearch = true;
-      if (hasSearch) {
-        // Fields the keyword search looks through.
-        const haystack = [
-          d.title, d.abstract ?? d.text, d.authors,
-          d.coi, d.coi_org, d.affiliations, d.funding,
-        ].filter((v) => v != null).join("\n");
-        try {
-          const regex = new RegExp(searchQuery, "i");
-          inSearch = regex.test(haystack);
-        } catch {
-          inSearch = haystack.toLowerCase().includes(searchQuery.toLowerCase());
-        }
-      }
-
+      // In "filter" mode, non-matching rows are already excluded above (they
+      // never reach this map), so this is only meaningful in "highlight" mode.
+      const inSearch = searchHighlightActive
+        ? evalSearchQuery(searchAst, searchHaystack(d, searchFields, SEARCH_FIELD_DEFS))
+        : true;
       // Linked Author / Org / PMID selection (shared with the COI network).
       // AND across dimensions: an article must satisfy every dimension that has
       // a selection (match a selected author AND a selected org AND a selected
@@ -442,64 +428,30 @@
         isActive: anyFilterActive ? passes : true,
         isHighlighted: anyFilterActive ? passes : true,
         groupColor: passes ? groupColor : null,
+        // Excludes the linked Author/Org/PMID selection on purpose — see
+        // mapActivePmids below.
+        matchesMapFilters: inDateRange && inSelection && inSearch,
       };
     });
 
   }
 
-  /**
-   * Parse a cell value into an array of individual items.
-   * Handles: JSON array "[\"a\",\"b\"]", Python-style "['a','b']", comma/semicolon-separated, or single value.
-   */
-  function parseColumnValueToItems(raw) {
-    if (raw == null || raw === "") return [];
-    const s = String(raw).trim();
-    if (!s) return [];
-    if (s.startsWith("[")) {
-      try {
-        const parsed = JSON.parse(s);
-        if (Array.isArray(parsed)) return parsed.map((v) => String(v).trim()).filter(Boolean);
-      } catch {
-        // Python-style: ['Item1', ' Item2'] — extract quoted segments
-        const out = [];
-        const re = /['"]([^'"]*)['"]/g;
-        let m;
-        while ((m = re.exec(s)) !== null) out.push(m[1].trim());
-        if (out.length > 0) return out.filter(Boolean);
-      }
-    }
-    if (s.includes(",") || s.includes(";")) {
-      return s.split(/[,;]/).map((v) => v.trim()).filter(Boolean);
-    }
-    return [s];
-  }
-
-  /** Normalize a cell value to an array of values for highlight matching (uses parseColumnValueToItems). */
-  function rowValuesForColumn(raw) {
-    return parseColumnValueToItems(raw);
-  }
+  // Share which papers currently pass the map's date/highlight-value/search
+  // filters with the COI network, so it can narrow to the same set. The
+  // collection scope and a search in "filter" mode are already baked into
+  // filteredData itself (via scopedData/searchFilteredData), so this set
+  // reflects those too.
+  $: mapActivePmids.set(
+    new Set(
+      filteredData
+        .filter((d) => d.matchesMapFilters)
+        .map((d) => String(d.pmid ?? d.PMID ?? "").trim())
+        .filter(Boolean),
+    ),
+  );
 
   // Use actual max date from data instead of arbitrary cap
   $: maxAllowedIndex = allDates.length > 0 ? allDates.length - 1 : 0;
-
-  function parseCitedByPmids(val) {
-    if (val == null) return [];
-    const s = String(val).trim();
-    if (!s) return [];
-    try {
-      let parsed = null;
-      try {
-        parsed = JSON.parse(s);
-      } catch {
-        const normalized = s.replace(/""/g, '"');
-        parsed = JSON.parse(normalized);
-      }
-      if (Array.isArray(parsed)) return parsed.map((p) => String(p).trim()).filter(Boolean);
-      return [];
-    } catch {
-      return s.split(/[,\s;]+/).map((p) => p.replace(/^["'\s]+|["'\s]+$/g, "")).filter(Boolean);
-    }
-  }
 
   /**
    * Stream-parse CSV data into `data`.
@@ -780,6 +732,7 @@
     // Reset search
     searchQuery = "";
     highlightSearchQuery = "";
+    searchFields = new Set(SEARCH_FIELD_DEFS.map((f) => f.key));
 
     // Reset opacity to initial default
     opacity = 0.05;
@@ -817,9 +770,37 @@
             id="search-input"
             type="text"
             class="filter-input filter-input-search"
-            placeholder="Title, abstract, COI, affiliation, funding…"
+            placeholder="e.g. vaping AND (nicotine OR addiction)"
             bind:value={searchQuery}
           />
+        </div>
+        <div class="filter-match-mode" role="group" aria-label="Search mode">
+          <label class="filter-radio">
+            <input type="radio" name="searchMode" value="filter" bind:group={searchMode} />
+            <span>Filter</span>
+          </label>
+          <label class="filter-radio">
+            <input type="radio" name="searchMode" value="highlight" bind:group={searchMode} />
+            <span>Highlight</span>
+          </label>
+        </div>
+        <p class="filter-hint">AND / OR, parentheses to group, "quotes" for an exact phrase.</p>
+        <div class="search-fields" role="group" aria-label="Search in">
+          {#each SEARCH_FIELD_DEFS as f}
+            <label class="filter-checkbox search-field-checkbox">
+              <input
+                type="checkbox"
+                class="filter-checkbox-input"
+                checked={searchFields.has(f.key)}
+                on:change={(e) => {
+                  const next = new Set(searchFields);
+                  if (e.target.checked) next.add(f.key); else next.delete(f.key);
+                  searchFields = next;
+                }}
+              />
+              <span class="filter-checkbox-text">{f.label}</span>
+            </label>
+          {/each}
         </div>
         <div class="search-examples">
           <span class="search-examples-label">Try:</span>
@@ -1491,6 +1472,17 @@
   .search-input-wrap .filter-input-search {
     width: 100%;
     box-sizing: border-box;
+  }
+
+  .search-fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    margin-top: 0.5rem;
+  }
+  .search-field-checkbox {
+    margin-bottom: 0;
+    font-size: 0.75rem;
   }
 
   .search-examples {

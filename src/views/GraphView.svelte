@@ -8,15 +8,24 @@
   import MultiSelect from "../components/MultiSelect.svelte";
   // Author/Org/PMID selection is shared with the Semantic map view, so picking
   // a node here also highlights the matching articles there (and vice versa).
-  import { selAuthors, selOrgs, selPmids, clearSharedFilters } from "../stores/sharedFilters.js";
+  import { selAuthors, selOrgs, selPmids, clearSharedFilters, mapActivePmids } from "../stores/sharedFilters.js";
   // Node merges live in a shared store so the Semantic map view sees them too.
   import { mergeGroups } from "../stores/merges.js";
+  // Which collection (e.g. "E-Cigs", "Creatine") the app is scoped to — shared
+  // with the Semantic map view so switching it re-scopes both.
+  import { selectedCollection } from "../stores/collectionFilter.js";
+  import { applyMerges, applyCollectionFilter, applyMapFilter } from "../lib/graphFilters.js";
 
   // Raw graph as loaded; the *rendered* graph is derived by applying the user's
-  // merges (variant org/author names combined into a single node).
+  // merges (variant org/author names combined into a single node). Loaded in
+  // two stages: "core" (the COI-disclosing subgraph — a few MB, is all the
+  // default overview renders anyway) lands first for a fast first paint; the
+  // much larger "extended" long tail (everyone else, needed only for
+  // search/focus outside the core) streams in after, in the background.
   let rawNodes = [];
   let rawLinks = [];
   let loading = true;
+  let loadingExtended = false;
   let error = "";
   let selected = null;
   let scatterHoverId = null; // author id hovered in the scatter → highlighted in the network
@@ -38,18 +47,42 @@
   let yKey = "coiOrgs";
   $: yLabel = Y_METRICS.find((m) => m.key === yKey).label;
 
-  const DATA_URL = (import.meta.env.BASE_URL || "/") + "coi-graph.json";
+  // How many hops out from a single selected node the network reveals. Only
+  // meaningful for a single selection (2+ nodes use the cross-filter view).
+  const MAX_DEPTH = 3;
+  let expandDepth = 1;
+
+  const BASE = import.meta.env.BASE_URL || "/";
+  const CORE_URL = BASE + "coi-graph-core.json";
+  const EXTENDED_URL = BASE + "coi-graph-extended.json";
+
+  async function fetchGraph(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Could not load ${url} (${res.status})`);
+    return res.json();
+  }
 
   onMount(async () => {
     try {
-      const res = await fetch(DATA_URL);
-      if (!res.ok) throw new Error(`Could not load ${DATA_URL} (${res.status})`);
-      const g = await res.json();
-      rawNodes = g.nodes;
-      rawLinks = g.links;
+      const core = await fetchGraph(CORE_URL);
+      rawNodes = core.nodes;
+      rawLinks = core.links;
+      loading = false;
+
+      // Background fetch: merge the long tail in once it lands, so it's
+      // searchable/focusable without having blocked the initial render.
+      loadingExtended = true;
+      try {
+        const extended = await fetchGraph(EXTENDED_URL);
+        rawNodes = [...rawNodes, ...extended.nodes];
+        rawLinks = [...rawLinks, ...extended.links];
+      } catch (e) {
+        console.error("Failed to load the full author/paper universe:", e);
+      } finally {
+        loadingExtended = false;
+      }
     } catch (e) {
       error = e.message || String(e);
-    } finally {
       loading = false;
     }
   });
@@ -67,90 +100,18 @@
     );
   }
 
-  // --- apply merges: collapse member nodes into one canonical node ------------
-  function applyMerges(nodesIn, linksIn, groups) {
-    if (!groups.length) return { nodes: nodesIn, links: linksIn };
-    const memberToGroup = new Map();
-    for (const g of groups) for (const m of g.members) memberToGroup.set(m, g);
-    const canon = (id) => memberToGroup.get(id)?.id ?? id;
-    const byId = new Map(nodesIn.map((n) => [n.id, n]));
+  let mergedNodes = [], mergedLinks = [];
+  $: ({ nodes: mergedNodes, links: mergedLinks } = applyMerges(rawNodes, rawLinks, $mergeGroups));
 
-    const out = new Map();
-    for (const n of nodesIn) {
-      if (memberToGroup.has(n.id)) continue; // folded into a canonical node
-      out.set(n.id, { ...n }); // clone — positions get relaxed in the canvas
-    }
-    for (const g of groups) {
-      const members = g.members.map((id) => byId.get(id)).filter(Boolean);
-      if (!members.length) continue;
-      const label = members[0].label;
-      const cx = members.reduce((s, m) => s + (m.x || 0), 0) / members.length;
-      const cy = members.reduce((s, m) => s + (m.y || 0), 0) / members.length;
-      const node = { id: g.id, label, name: g.name, x: cx, y: cy, degree: 0, merged: members.length };
-      if (label === "Author") {
-        // citations is a baked per-name total; take the max across variants
-        // (same person, so summing would double-count). papers/coiOrgs/coiPapers
-        // are recomputed from the merged, deduped edges below (so shared papers
-        // across variants are counted once).
-        node.citations = Math.max(0, ...members.map((m) => m.citations || 0));
-        node.papers = 0;
-        node.coiOrgs = 0;
-        node.coiPapers = 0;
-      } else if (label === "Paper") {
-        node.title = members[0].title;
-      }
-      out.set(g.id, node);
-    }
-
-    // Remap + dedupe links (sum COI weights, OR the disclosed flag, drop
-    // self-loops from the merge).
-    const lmap = new Map();
-    for (const l of linksIn) {
-      const s = canon(l.source), t = canon(l.target);
-      if (s === t) continue;
-      const key = l.rel + "|" + s + "|" + t;
-      const ex = lmap.get(key);
-      if (ex) {
-        if (l.rel === "DISCLOSED_COI") ex.weight = (ex.weight || 0) + (l.weight || 0);
-        if (l.rel === "AUTHORED" && l.coi) ex.coi = true;
-      } else {
-        lmap.set(key, {
-          source: s, target: t, rel: l.rel,
-          ...(l.rel === "DISCLOSED_COI" ? { weight: l.weight || 0 } : {}),
-          ...(l.rel === "AUTHORED" ? { coi: !!l.coi } : {}),
-        });
-      }
-    }
-    const links = [...lmap.values()];
-
-    // Merging changes neighbors' edge counts (deduped variants), so recompute
-    // all edge-derived fields from scratch — reset to 0 first, otherwise the
-    // cloned non-merged nodes would double-count on top of their baked values.
-    for (const n of out.values()) {
-      n.degree = 0;
-      if (n.label === "Author") { n.coiOrgs = 0; n.coiPapers = 0; }
-    }
-    for (const l of links) {
-      const s = out.get(l.source), t = out.get(l.target);
-      if (s) s.degree++;
-      if (t) t.degree++;
-      if (l.rel === "DISCLOSED_COI" && s && s.label === "Author") s.coiOrgs++;
-      if (l.rel === "AUTHORED" && t && t.label === "Author") {
-        // total papers is only recomputed for merged authors (a co-author's
-        // baked DB total can exceed their in-graph papers); coiPapers counts
-        // only papers the author actually disclosed on.
-        if (t.merged) t.papers++;
-        if (l.coi) t.coiPapers++;
-      }
-    }
-    return { nodes: [...out.values()], links };
-  }
+  let collectionFiltered = { nodes: [], links: [] };
+  $: collectionFiltered = applyCollectionFilter(mergedNodes, mergedLinks, $selectedCollection);
 
   let nodes = [], links = [];
-  $: ({ nodes, links } = applyMerges(rawNodes, rawLinks, $mergeGroups));
+  $: ({ nodes, links } = applyMapFilter(collectionFiltered.nodes, collectionFiltered.links, $mapActivePmids));
 
   // Indices rebuilt whenever the merged graph changes.
-  let authorsList = [], authorNames = [], orgNames = [], pmidList = [];
+  let allAuthors = [], allPapers = [], coiAuthorsList = [];
+  let authorNames = [], orgNames = [], pmidList = [];
   let authorIdByName = new Map(), orgIdByName = new Map(), paperIdByPmid = new Map();
   let authorIdSet = new Set(), adjacency = new Map();
   $: {
@@ -169,13 +130,17 @@
     }
     authorIdByName = aMap; orgIdByName = oMap; paperIdByPmid = pMap;
     authorIdSet = aSet; adjacency = adj;
-    // Scatter + pickers default to COI-disclosing authors/papers; the co-authors
-    // and their non-COI papers are surfaced only when you drill into a node.
-    // (n.coi !== false keeps older data, which has no `coi` field, working.)
-    authorsList = nodes.filter((n) => n.label === "Author" && n.coi !== false);
-    authorNames = authorsList.map((n) => n.name).sort();
+    // Pickers cover the entire universe (every author/paper in the current
+    // collection/map scope, not just the ones with a COI disclosure) so any
+    // author or PMID can be found and focused. The author-impact scatter below
+    // stays scoped to COI-disclosing authors — its metrics (COI orgs,
+    // citations-among-COI-authors) are specifically about them.
+    allAuthors = nodes.filter((n) => n.label === "Author");
+    allPapers = nodes.filter((n) => n.label === "Paper");
+    coiAuthorsList = allAuthors.filter((n) => n.coi !== false);
+    authorNames = allAuthors.map((n) => n.name).sort();
     orgNames = [...oMap.keys()].sort();
-    pmidList = nodes.filter((n) => n.label === "Paper" && n.coi !== false).map((n) => n.name).sort();
+    pmidList = allPapers.map((n) => n.name).sort();
   }
 
   // directly-selected node ids (drives the graph's focus)
@@ -210,9 +175,9 @@
   })();
 
   $: hasFilter = $selAuthors.length || $selOrgs.length || $selPmids.length;
-  $: authorCount = authorsList.length;
+  $: authorCount = allAuthors.length;
   $: orgCount = nodes.filter((n) => n.label === "Org").length;
-  $: paperCount = nodes.filter((n) => n.label === "Paper" && n.coi !== false).length;
+  $: paperCount = allPapers.length;
 
   function clearAll() { clearSharedFilters(); }
   function addAuthor(name) { $selAuthors = [...new Set([...$selAuthors, name])]; }
@@ -305,6 +270,11 @@
       {:else if !loading && !error}
         <span class="count">{paperCount} papers · {authorCount} authors · {orgCount} orgs</span>
       {/if}
+      {#if loadingExtended}
+        <span class="count loading-extended" title="The COI-dense core is shown now; the rest of the author/paper universe is still loading in the background for search/focus.">
+          loading full universe…
+        </span>
+      {/if}
       <button class="combine-toggle" class:on={showCombine} on:click={() => (showCombine = !showCombine)}>
         Combine nodes{#if $mergeGroups.length} · {$mergeGroups.length}{/if}
       </button>
@@ -355,9 +325,22 @@
     {:else}
       <div class="split">
         <div class="pane">
-          <div class="pane-title">Relationships {hasFilter ? "" : "(overview)"}</div>
+          <div class="pane-title">
+            <span>Relationships {hasFilter ? "" : "(overview)"}</span>
+            {#if highlightIds.size === 1}
+              <span class="depth-ctl" title="Reveal nodes this many connection-hops out from the selected node">
+                Expand
+                <button on:click={() => (expandDepth = Math.max(1, expandDepth - 1))}
+                  disabled={expandDepth <= 1} aria-label="Fewer degrees">−</button>
+                <b>{expandDepth}</b>
+                <button on:click={() => (expandDepth = Math.min(MAX_DEPTH, expandDepth + 1))}
+                  disabled={expandDepth >= MAX_DEPTH} aria-label="More degrees">+</button>
+                {expandDepth === 1 ? "degree" : "degrees"}
+              </span>
+            {/if}
+          </div>
           <div class="pane-body">
-            <CoiNetwork {nodes} {links} {highlightIds} hoverId={scatterHoverId}
+            <CoiNetwork {nodes} {links} {highlightIds} {expandDepth} hoverId={scatterHoverId}
               on:nodetoggle={(e) => toggleNode(e.detail)}
               on:highlight={(e) => (netHoverNode = e.detail)}
               on:focuschange={(e) => (selected = e.detail)} />
@@ -371,7 +354,7 @@
             </select>
           </div>
           <div class="pane-body">
-            <AuthorScatter authors={authorsList} highlightIds={activeAuthorIds} hoverIds={scatterHoverIds} {yKey} {yLabel}
+            <AuthorScatter authors={coiAuthorsList} highlightIds={activeAuthorIds} hoverIds={scatterHoverIds} {yKey} {yLabel}
               on:authorclick={(e) => (selected = e.detail)}
               on:authortoggle={(e) => toggleNode(e.detail)}
               on:authorhover={(e) => (scatterHoverId = e.detail ? e.detail.id : null)} />
@@ -430,6 +413,7 @@
     border-radius: 5px; padding: 5px 10px; cursor: pointer; font-size: 13px;
   }
   .count { color: var(--cjr-text-muted); font-size: 13px; }
+  .loading-extended { color: var(--cjr-text-muted); font-size: 12px; font-style: italic; }
 
   .combine-toggle {
     border: 1px solid var(--cjr-border); background: var(--cjr-white);
@@ -498,6 +482,22 @@
     border-radius: 4px; background: var(--cjr-white); cursor: pointer;
   }
   .pane-body { flex: 1 1 auto; min-height: 0; position: relative; }
+
+  /* Degree stepper, aligned right of the "Relationships" title. */
+  .depth-ctl {
+    margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
+    text-transform: none; letter-spacing: normal; font-size: 11px; font-weight: 600;
+    color: var(--cjr-text-muted);
+  }
+  .depth-ctl button {
+    width: 18px; height: 18px; display: inline-flex; align-items: center;
+    justify-content: center; border: 1px solid var(--cjr-border);
+    border-radius: 4px; background: var(--cjr-white); color: var(--cjr-blue);
+    cursor: pointer; font-size: 13px; line-height: 1; padding: 0;
+  }
+  .depth-ctl button:hover:not(:disabled) { border-color: var(--cjr-blue); }
+  .depth-ctl button:disabled { color: var(--cjr-border); cursor: not-allowed; }
+  .depth-ctl b { min-width: 10px; text-align: center; color: var(--cjr-blue); }
 
   .msg {
     position: absolute; inset: 0; display: flex; flex-direction: column;
