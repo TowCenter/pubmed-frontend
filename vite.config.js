@@ -10,7 +10,9 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [svelte(), pgDataPlugin()],
-    base: '/pubmed-frontend/', // Must match GitHub repo name for Pages
+    // Must match GitHub repo name for Pages. Override with BASE_PATH=/ for
+    // deploys served from a domain root (e.g. Railway) instead of a subpath.
+    base: env.BASE_PATH || '/pubmed-frontend/',
     build: {
       outDir: 'dist' // Use 'dist' since you're using the `gh-pages` branch
     }
